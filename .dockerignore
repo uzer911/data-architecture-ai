@@ -1,0 +1,14 @@
+.venv/
+.git/
+.kiro/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.DS_Store
+*.ipynb
+ReadersAreTheLeaders.rtf
+s3_cars_data.csv
+s3_cars_data_normalized.csv
+s3_library_data.json
+schema/
+TEST_RESULTS.md

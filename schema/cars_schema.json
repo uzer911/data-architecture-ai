@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Cars",
+  "type": "object",
+  "properties": {
+    "id": {"type":"integer"},
+    "make": {"type":"string"},
+    "doors": {"type":"integer"},
+    "body_style": {"type":"string"},
+    "drive": {"type":"string"},
+    "curb_weight": {"type":"number"},
+    "cylinders": {"type":"integer"},
+    "horsepower": {"type":"number"},
+    "mpg": {"type":"number"},
+    "price": {"type":"number"}
+  },
+  "required":["id","make","price"]
+}

@@ -1,0 +1,318 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  AI Project Monitoring stack — Lambda, EventBridge, IAM, and S3 data buckets
+  for eu-north-1 and eu-central-1. Bucket names are globally unique via
+  account ID suffix. Review IAM policies before deploying to production.
+
+Parameters:
+  AiProjectPoolId:
+    Type: String
+    Description: AI Project Pool ID (provide the pool identifier)
+
+  AiProjectRegions:
+    Type: String
+    Description: AI Project Regions (comma-separated list or single region)
+    Default: "eu-north-1"
+
+  Environment:
+    Type: String
+    Description: Deployment environment tag
+    Default: production
+    AllowedValues:
+      - production
+      - staging
+      - development
+
+  MonitoringScheduleExpression:
+    Type: String
+    Description: EventBridge schedule expression for monitoring Lambda
+    Default: rate(15 minutes)
+
+Metadata:
+  AwsAiProjectsManagedResource:
+    - GblAiProjectMonitoring: 22
+  GblIamSecurity: "1.0.0"
+
+# ---------------------------------------------------------------------------
+# S3 Data Buckets
+# Naming convention: langchain-<account-id>-<region>
+# Both buckets are created in the stack's deployment region.
+# The eu-central-1 bucket uses a logical name suffix to distinguish it.
+# ---------------------------------------------------------------------------
+Resources:
+
+  # Primary data bucket — eu-north-1
+  ProjectDataBucketNorth:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "langchain-${AWS::AccountId}-eu-north-1"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireAthenaResults
+            Status: Enabled
+            Prefix: athenaresults/
+            ExpirationInDays: 30
+      Tags:
+        - Key: GblCustomComponent
+          Value: "True"
+        - Key: GblAiProjectMonitoring
+          Value: "1.0.0"
+        - Key: AiProjects:permission-scope
+          Value: protected
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Region
+          Value: eu-north-1
+
+  # Secondary data bucket — eu-central-1
+  ProjectDataBucketCentral:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "langchain-${AWS::AccountId}-eu-central-1"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireAthenaResults
+            Status: Enabled
+            Prefix: athenaresults/
+            ExpirationInDays: 30
+      Tags:
+        - Key: GblCustomComponent
+          Value: "True"
+        - Key: GblAiProjectMonitoring
+          Value: "1.0.0"
+        - Key: AiProjects:permission-scope
+          Value: protected
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Region
+          Value: eu-central-1
+
+  # ---------------------------------------------------------------------------
+  # Glue databases — one per dataset, referenced by the notebook
+  # ---------------------------------------------------------------------------
+  LibraryGlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: project_library_db
+        Description: Glue database for the library dataset
+
+  CarsGlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: project_cars_db
+        Description: Glue database for the cars dataset
+
+  # ---------------------------------------------------------------------------
+  # Glue Crawlers
+  # ---------------------------------------------------------------------------
+  LibraryCrawlerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSGlueServiceRole"
+      Policies:
+        - PolicyName: GlueCrawlerS3Access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt ProjectDataBucketNorth.Arn
+                  - !Sub "${ProjectDataBucketNorth.Arn}/*"
+                  - !GetAtt ProjectDataBucketCentral.Arn
+                  - !Sub "${ProjectDataBucketCentral.Arn}/*"
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  LibraryCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: project-library-crawler
+      Role: !GetAtt LibraryCrawlerRole.Arn
+      DatabaseName: !Ref LibraryGlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Sub "s3://${ProjectDataBucketNorth}/library-data/"
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+      Tags:
+        Environment: !Ref Environment
+
+  CarsCrawler:
+    Type: AWS::Glue::Crawler
+    Properties:
+      Name: project-cars-crawler
+      Role: !GetAtt LibraryCrawlerRole.Arn
+      DatabaseName: !Ref CarsGlueDatabase
+      Targets:
+        S3Targets:
+          - Path: !Sub "s3://${ProjectDataBucketNorth}/cars-data/"
+      SchemaChangePolicy:
+        UpdateBehavior: UPDATE_IN_DATABASE
+        DeleteBehavior: LOG
+      Tags:
+        Environment: !Ref Environment
+
+  # ---------------------------------------------------------------------------
+  # Monitoring Lambda + EventBridge schedule
+  # ---------------------------------------------------------------------------
+  MonitoringFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: MonitoringGlueReadAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - glue:GetCrawler
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:crawler/${LibraryCrawler}"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:crawler/${CarsCrawler}"
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  MonitoringFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-monitoring"
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt MonitoringFunctionRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          LIBRARY_CRAWLER: !Ref LibraryCrawler
+          CARS_CRAWLER: !Ref CarsCrawler
+      Code:
+        ZipFile: |
+          import json
+          import logging
+          import os
+
+          import boto3
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          glue = boto3.client("glue")
+
+          def lambda_handler(event, context):
+              crawler_names = [os.environ["LIBRARY_CRAWLER"], os.environ["CARS_CRAWLER"]]
+              statuses = {}
+              for name in crawler_names:
+                  try:
+                      response = glue.get_crawler(Name=name)
+                      statuses[name] = response["Crawler"]["State"]
+                  except Exception as exc:
+                      statuses[name] = f"ERROR:{type(exc).__name__}:{exc}"
+              logger.info(json.dumps({"event": event, "crawler_statuses": statuses}, default=str))
+              return {"statusCode": 200, "crawlerStatuses": statuses}
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  MonitoringScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-monitoring-schedule"
+      Description: Periodic trigger for monitoring Lambda
+      ScheduleExpression: !Ref MonitoringScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt MonitoringFunction.Arn
+          Id: MonitoringFunctionTarget
+
+  MonitoringInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref MonitoringFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt MonitoringScheduleRule.Arn
+
+# ---------------------------------------------------------------------------
+# Outputs — consumed by the notebook (cell 4/5)
+# ---------------------------------------------------------------------------
+Outputs:
+  ProjectfilesBucketName:
+    Description: Primary S3 data bucket (eu-north-1) — used by the notebook
+    Value: !Ref ProjectDataBucketNorth
+
+  ProjectfilesBucketCentralName:
+    Description: Secondary S3 data bucket (eu-central-1)
+    Value: !Ref ProjectDataBucketCentral
+
+  LibraryDatabaseName:
+    Description: Glue database name for the library dataset
+    Value: !Ref LibraryGlueDatabase
+
+  CarsDatabaseName:
+    Description: Glue database name for the cars dataset
+    Value: !Ref CarsGlueDatabase
+
+  LibraryCrawlerName:
+    Description: Glue crawler name for the library dataset
+    Value: !Ref LibraryCrawler
+
+  CarsCrawlerName:
+    Description: Glue crawler name for the cars dataset
+    Value: !Ref CarsCrawler
+
+  MonitoringFunctionName:
+    Description: Monitoring Lambda function name
+    Value: !Ref MonitoringFunction
+
+# NOTE: IAM policies have been tightened from the original template.
+# Destructive EC2/SageMaker/Lambda/ECS/QuickSight actions have been removed.
+# Only read, list, and targeted stop/disable actions are permitted.
+# Review and further restrict Resource ARNs before deploying to production.

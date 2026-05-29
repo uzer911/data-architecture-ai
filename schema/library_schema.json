@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Library",
+  "type": "object",
+  "properties": {
+    "book_id":{"type":"integer"},
+    "title":{"type":"string"},
+    "author":{"type":"string"},
+    "genre":{"type":"string"},
+    "pub_date":{"type":"string","format":"date-time"}
+  },
+  "required":["book_id","title"]
+}
