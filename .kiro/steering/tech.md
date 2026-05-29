@@ -18,13 +18,13 @@
 - **Amazon Bedrock** — LLM inference (model invoked via LangChain)
 - **Amazon Athena** — Serverless SQL query execution over S3 data
 - **AWS S3** — Data lake storage for CSV and JSON datasets
-- **AWS CloudFormation** — Infrastructure provisioning (IAM roles, Lambda, EventBridge)
+- **AWS CloudFormation** — Infrastructure provisioning (IAM roles, S3, Glue)
 
 ## Infrastructure
 - Template: `cloudformation-template-validated.yml`
 - Requires `CAPABILITY_IAM` (creates IAM roles and policies)
 - Stack name: `gbl-ai-project-monitoring-stack`
-- Parameters: `AiProjectPoolId`, `AiProjectRegions`
+- Parameters: Optional `Environment` (default `production`)
 
 ## Common Commands
 
@@ -53,9 +53,7 @@ Produces `s3_cars_data_normalized.csv`.
 
 ### Deploy to AWS (CloudFormation change set)
 ```bash
-./deploy-changeset.sh "<pool-id>" "<region1,region2>"
-# Example:
-./deploy-changeset.sh "my-pool-id" "eu-north-1,eu-central-1"
+./deploy-changeset.sh
 ```
 
 ### Validate CloudFormation Template

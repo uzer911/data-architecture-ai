@@ -1,11 +1,42 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Iterable
+from urllib.parse import quote
 
-from langchain_community.utilities import SQLDatabase
-from sqlalchemy import create_engine
+import boto3
+from sqlalchemy import create_engine, text
+
 from .config import get_settings
 from .core import LLMSQLService, parse_catalog
+
+# Workgroups created for this project that use Athena managed query results.
+_MANAGED_RESULTS_WORKGROUPS = frozenset({'project-text-to-sql'})
+
+
+@lru_cache(maxsize=32)
+def workgroup_uses_managed_results(workgroup: str, region: str) -> bool:
+    """Return True when the workgroup stores results in Athena managed storage."""
+    if not workgroup:
+        return False
+    client = boto3.client('athena', region_name=region)
+    response = client.get_work_group(WorkGroup=workgroup)
+    configuration = response.get('WorkGroup', {}).get('Configuration', {})
+    managed = configuration.get('ManagedQueryResultsConfiguration') or {}
+    return bool(managed.get('Enabled'))
+
+
+def should_omit_s3_staging_dir(workgroup: str, region: str) -> bool:
+    """Decide whether to skip S3 ResultConfiguration for this workgroup."""
+    settings = get_settings()
+    if settings.athena_use_managed_results is not None:
+        return settings.athena_use_managed_results
+    if workgroup in _MANAGED_RESULTS_WORKGROUPS:
+        return True
+    try:
+        return workgroup_uses_managed_results(workgroup, region)
+    except Exception:
+        return False
 
 
 def make_athena_connection_string(
@@ -13,16 +44,36 @@ def make_athena_connection_string(
     project_files_bucket: str,
     region: str | None = None,
     athena_workgroup: str = 'primary',
+    *,
+    s3_staging_dir: str | None = None,
 ) -> str:
+    """Build a SQLAlchemy connection URL for PyAthena.
+
+    When the workgroup uses Athena managed query results, pass an empty
+    s3_staging_dir so PyAthena does not send ResultConfiguration (conflicts
+    with ManagedQueryResultsConfiguration).
+    """
     runtime_settings = get_settings()
     region = region or runtime_settings.region or 'eu-north-1'
     connathena = f'athena.{region}.amazonaws.com'
     port = '443'
-    s3_staging = f's3://{project_files_bucket}/athenaresults/'
-    return (
-        f'awsathena+rest://@{connathena}:{port}/{glue_db_name}'
-        f'?s3_staging_dir={s3_staging}&work_group={athena_workgroup}'
-    )
+
+    query_parts = [f'work_group={quote(athena_workgroup, safe="")}']
+
+    if s3_staging_dir is None:
+        if should_omit_s3_staging_dir(athena_workgroup, region):
+            # Explicit empty value disables AWS_ATHENA_S3_STAGING_DIR fallback in PyAthena.
+            query_parts.insert(0, 's3_staging_dir=')
+        else:
+            staging = f's3://{project_files_bucket}/athenaresults/'
+            query_parts.insert(0, f's3_staging_dir={quote(staging, safe="")}')
+    elif s3_staging_dir == '':
+        query_parts.insert(0, 's3_staging_dir=')
+    else:
+        query_parts.insert(0, f's3_staging_dir={quote(s3_staging_dir, safe="")}')
+
+    query = '&'.join(query_parts)
+    return f'awsathena+rest://@{connathena}:{port}/{glue_db_name}?{query}'
 
 
 def create_athena_engine(
@@ -38,6 +89,25 @@ def create_athena_engine(
         athena_workgroup=athena_workgroup,
     )
     return create_engine(connection_string, echo=False, pool_pre_ping=True)
+
+
+class AthenaDB:
+    """Execute SQL via PyAthena without LangChain metadata introspection.
+
+    LangChain's SQLDatabase calls athena:ListTableMetadata on init. We already
+    load schema from Glue in parse_catalog(), so only run() is needed.
+    """
+
+    def __init__(self, engine):
+        self._engine = engine
+
+    def run(self, sql: str):
+        with self._engine.connect() as conn:
+            result = conn.execute(text(sql))
+            try:
+                return [dict(row._mapping) for row in result]
+            except Exception:
+                return []
 
 
 def build_athena_service(
@@ -63,7 +133,7 @@ def build_athena_service(
         region=region,
         athena_workgroup=athena_workgroup,
     )
-    db = SQLDatabase(engine)
+    db = AthenaDB(engine)
     glue_catalog, allowed_tables = parse_catalog(glue_db_names, region=region)
 
     return LLMSQLService(

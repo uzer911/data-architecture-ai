@@ -1,7 +1,13 @@
 import unittest
 from unittest.mock import patch
 
-from llm_sql.config import Settings, SettingsError, get_settings, require_runtime_settings
+from llm_sql.config import (
+    Settings,
+    SettingsError,
+    get_settings,
+    require_runtime_settings,
+    resolve_bedrock_model,
+)
 
 
 class SettingsTests(unittest.TestCase):
@@ -34,6 +40,18 @@ class SettingsTests(unittest.TestCase):
 
         with self.assertRaises(SettingsError):
             require_runtime_settings(runtime_settings)
+
+    def test_resolve_bedrock_model_maps_legacy_nova_in_eu(self):
+        self.assertEqual(
+            resolve_bedrock_model('amazon.nova-micro-v1:0', 'eu-north-1'),
+            'eu.amazon.nova-micro-v1:0',
+        )
+
+    def test_resolve_bedrock_model_keeps_inference_profile(self):
+        self.assertEqual(
+            resolve_bedrock_model('eu.amazon.nova-micro-v1:0', 'eu-north-1'),
+            'eu.amazon.nova-micro-v1:0',
+        )
 
 
 if __name__ == '__main__':

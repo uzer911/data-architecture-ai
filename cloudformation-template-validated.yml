@@ -1,18 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  AI Project Monitoring stack — Lambda, EventBridge, IAM, and S3 data buckets
-  for eu-north-1 and eu-central-1. Bucket names are globally unique via
-  account ID suffix. Review IAM policies before deploying to production.
+  Data architecture stack — S3, Glue, Athena, and ECS Fargate API.
+  Set Create* parameters to false to reuse resources that already exist in your account.
 
 Parameters:
-  AiProjectPoolId:
-    Type: String
-    Description: AI Project Pool ID (provide the pool identifier)
-
-  AiProjectRegions:
-    Type: String
-    Description: AI Project Regions (comma-separated list or single region)
-    Default: "eu-north-1"
 
   Environment:
     Type: String
@@ -23,29 +14,122 @@ Parameters:
       - staging
       - development
 
-  MonitoringScheduleExpression:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC for the ECS service and load balancer (default VPC is fine for dev)
+
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Public subnets for ALB and Fargate tasks (assignPublicIp enabled)
+
+  DesiredCount:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 10
+    Description: >
+      Fargate task count. Use 0 on first deploy (before the container image exists),
+      then set to 1 after pushing to ECR.
+
+  ContainerImage:
     Type: String
-    Description: EventBridge schedule expression for monitoring Lambda
-    Default: rate(15 minutes)
+    Default: ""
+    Description: >
+      ECR image URI. Leave empty to use the ECR repository created by this stack with tag "latest".
+
+  ApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: Optional API key sent as X-Api-Key header. Leave empty to disable auth.
+
+  AlbIngressCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: CIDR allowed to reach the load balancer on HTTP (restrict in production)
+
+  GlueDatabaseForQueries:
+    Type: String
+    Default: project_library_db
+    AllowedValues:
+      - project_library_db
+      - project_cars_db
+    Description: Primary Glue database the API queries at runtime
+
+  PrimaryDataBucketName:
+    Type: String
+    Description: Primary S3 data bucket name (eu-north-1)
+
+  CentralDataBucketName:
+    Type: String
+    Description: Secondary S3 data bucket name (logical eu-central-1 suffix)
+
+  CreatePrimaryDataBucket:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Set false if the primary bucket already exists
+
+  CreateCentralDataBucket:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Set false if the central bucket already exists
+
+  AthenaWorkgroupName:
+    Type: String
+    Default: project-text-to-sql
+    Description: Athena workgroup used for Text-to-SQL queries
+
+  CreateAthenaWorkgroup:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Set false if the Athena workgroup already exists
+
+  LibraryGlueDatabaseName:
+    Type: String
+    Default: project_library_db
+    Description: Glue database name for the library dataset
+
+  CarsGlueDatabaseName:
+    Type: String
+    Default: project_cars_db
+    Description: Glue database name for the cars dataset
+
+  CreateLibraryGlueDatabase:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Set false if the library Glue database already exists
+
+  CreateCarsGlueDatabase:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Set false if the cars Glue database already exists
+
+Conditions:
+  UseCustomImage: !Not [!Equals [!Ref ContainerImage, ""]]
+  UseApiKey: !Not [!Equals [!Ref ApiKey, ""]]
+  CreatePrimaryDataBucket: !Equals [!Ref CreatePrimaryDataBucket, "true"]
+  CreateCentralDataBucket: !Equals [!Ref CreateCentralDataBucket, "true"]
+  CreateAthenaWorkgroup: !Equals [!Ref CreateAthenaWorkgroup, "true"]
+  CreateLibraryGlueDatabase: !Equals [!Ref CreateLibraryGlueDatabase, "true"]
+  CreateCarsGlueDatabase: !Equals [!Ref CreateCarsGlueDatabase, "true"]
 
 Metadata:
   AwsAiProjectsManagedResource:
     - GblAiProjectMonitoring: 22
   GblIamSecurity: "1.0.0"
 
-# ---------------------------------------------------------------------------
-# S3 Data Buckets
-# Naming convention: langchain-<account-id>-<region>
-# Both buckets are created in the stack's deployment region.
-# The eu-central-1 bucket uses a logical name suffix to distinguish it.
-# ---------------------------------------------------------------------------
 Resources:
 
-  # Primary data bucket — eu-north-1
   ProjectDataBucketNorth:
     Type: AWS::S3::Bucket
+    Condition: CreatePrimaryDataBucket
     Properties:
-      BucketName: !Sub "langchain-${AWS::AccountId}-eu-north-1"
+      BucketName: !Ref PrimaryDataBucketName
       VersioningConfiguration:
         Status: Enabled
       BucketEncryption:
@@ -64,22 +148,14 @@ Resources:
             Prefix: athenaresults/
             ExpirationInDays: 30
       Tags:
-        - Key: GblCustomComponent
-          Value: "True"
-        - Key: GblAiProjectMonitoring
-          Value: "1.0.0"
-        - Key: AiProjects:permission-scope
-          Value: protected
         - Key: Environment
           Value: !Ref Environment
-        - Key: Region
-          Value: eu-north-1
 
-  # Secondary data bucket — eu-central-1
   ProjectDataBucketCentral:
     Type: AWS::S3::Bucket
+    Condition: CreateCentralDataBucket
     Properties:
-      BucketName: !Sub "langchain-${AWS::AccountId}-eu-central-1"
+      BucketName: !Ref CentralDataBucketName
       VersioningConfiguration:
         Status: Enabled
       BucketEncryption:
@@ -98,39 +174,27 @@ Resources:
             Prefix: athenaresults/
             ExpirationInDays: 30
       Tags:
-        - Key: GblCustomComponent
-          Value: "True"
-        - Key: GblAiProjectMonitoring
-          Value: "1.0.0"
-        - Key: AiProjects:permission-scope
-          Value: protected
         - Key: Environment
           Value: !Ref Environment
-        - Key: Region
-          Value: eu-central-1
 
-  # ---------------------------------------------------------------------------
-  # Glue databases — one per dataset, referenced by the notebook
-  # ---------------------------------------------------------------------------
   LibraryGlueDatabase:
     Type: AWS::Glue::Database
+    Condition: CreateLibraryGlueDatabase
     Properties:
       CatalogId: !Ref AWS::AccountId
       DatabaseInput:
-        Name: project_library_db
+        Name: !Ref LibraryGlueDatabaseName
         Description: Glue database for the library dataset
 
   CarsGlueDatabase:
     Type: AWS::Glue::Database
+    Condition: CreateCarsGlueDatabase
     Properties:
       CatalogId: !Ref AWS::AccountId
       DatabaseInput:
-        Name: project_cars_db
+        Name: !Ref CarsGlueDatabaseName
         Description: Glue database for the cars dataset
 
-  # ---------------------------------------------------------------------------
-  # Glue Crawlers
-  # ---------------------------------------------------------------------------
   LibraryCrawlerRole:
     Type: AWS::IAM::Role
     Properties:
@@ -153,10 +217,10 @@ Resources:
                   - s3:GetObject
                   - s3:ListBucket
                 Resource:
-                  - !GetAtt ProjectDataBucketNorth.Arn
-                  - !Sub "${ProjectDataBucketNorth.Arn}/*"
-                  - !GetAtt ProjectDataBucketCentral.Arn
-                  - !Sub "${ProjectDataBucketCentral.Arn}/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${PrimaryDataBucketName}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${PrimaryDataBucketName}/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${CentralDataBucketName}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${CentralDataBucketName}/*"
       Tags:
         - Key: Environment
           Value: !Ref Environment
@@ -166,10 +230,13 @@ Resources:
     Properties:
       Name: project-library-crawler
       Role: !GetAtt LibraryCrawlerRole.Arn
-      DatabaseName: !Ref LibraryGlueDatabase
+      DatabaseName: !If
+        - CreateLibraryGlueDatabase
+        - !Ref LibraryGlueDatabase
+        - !Ref LibraryGlueDatabaseName
       Targets:
         S3Targets:
-          - Path: !Sub "s3://${ProjectDataBucketNorth}/library-data/"
+          - Path: !Sub "s3://${PrimaryDataBucketName}/library-data/"
       SchemaChangePolicy:
         UpdateBehavior: UPDATE_IN_DATABASE
         DeleteBehavior: LOG
@@ -181,20 +248,78 @@ Resources:
     Properties:
       Name: project-cars-crawler
       Role: !GetAtt LibraryCrawlerRole.Arn
-      DatabaseName: !Ref CarsGlueDatabase
+      DatabaseName: !If
+        - CreateCarsGlueDatabase
+        - !Ref CarsGlueDatabase
+        - !Ref CarsGlueDatabaseName
       Targets:
         S3Targets:
-          - Path: !Sub "s3://${ProjectDataBucketNorth}/cars-data/"
+          - Path: !Sub "s3://${PrimaryDataBucketName}/cars-data/"
       SchemaChangePolicy:
         UpdateBehavior: UPDATE_IN_DATABASE
         DeleteBehavior: LOG
       Tags:
         Environment: !Ref Environment
 
-  # ---------------------------------------------------------------------------
-  # Monitoring Lambda + EventBridge schedule
-  # ---------------------------------------------------------------------------
-  MonitoringFunctionRole:
+  ProjectAthenaWorkgroup:
+    Type: AWS::Athena::WorkGroup
+    Condition: CreateAthenaWorkgroup
+    Properties:
+      Name: !Ref AthenaWorkgroupName
+      Description: Text-to-SQL query workgroup
+      State: ENABLED
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+        BytesScannedCutoffPerQuery: 1073741824
+        ManagedQueryResultsConfiguration:
+          Enabled: false
+        ResultConfiguration:
+          OutputLocation: !Sub "s3://${PrimaryDataBucketName}/athenaresults/"
+
+  AppEcrRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: data-architecture-ai
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      ImageTagMutability: MUTABLE
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [{
+              "rulePriority": 1,
+              "description": "Keep last 5 images",
+              "selection": {
+                "tagStatus": "any",
+                "countType": "imageCountMoreThan",
+                "countNumber": 5
+              },
+              "action": { "type": "expire" }
+            }]
+          }
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/data-architecture-ai
+      RetentionInDays: 30
+
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: data-architecture-ai
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  EcsTaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -202,103 +327,260 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service: lambda.amazonaws.com
+              Service: ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  EcsTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
       Policies:
-        - PolicyName: MonitoringGlueReadAccess
+        - PolicyName: TextToSqlRuntimeAccess
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
-                  - glue:GetCrawler
+                  - bedrock:InvokeModel
                 Resource:
-                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:crawler/${LibraryCrawler}"
-                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:crawler/${CarsCrawler}"
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/eu.amazon.nova-micro-v1:0"
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/eu.amazon.nova-lite-v1:0"
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/eu.amazon.nova-pro-v1:0"
+                  - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/amazon.nova-micro-v1:0"
+                  - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/amazon.nova-lite-v1:0"
+                  - !Sub "arn:${AWS::Partition}:bedrock:*::foundation-model/amazon.nova-pro-v1:0"
+              - Effect: Allow
+                Action:
+                  - glue:GetDatabase
+                  - glue:GetDatabases
+                  - glue:GetTable
+                  - glue:GetTables
+                  - glue:GetPartitions
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/${LibraryGlueDatabaseName}"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/${CarsGlueDatabaseName}"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/${LibraryGlueDatabaseName}/*"
+                  - !Sub "arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/${CarsGlueDatabaseName}/*"
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:StopQueryExecution
+                  - athena:GetWorkGroup
+                  - athena:GetDataCatalog
+                  - athena:ListDatabases
+                  - athena:GetDatabase
+                  - athena:ListTableMetadata
+                  - athena:GetTableMetadata
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${AthenaWorkgroupName}"
+                  - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:datacatalog/*"
+                  - !Sub "arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:database/*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${PrimaryDataBucketName}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${PrimaryDataBucketName}/*"
+                  - !Sub "arn:${AWS::Partition}:s3:::${CentralDataBucketName}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${CentralDataBucketName}/*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${PrimaryDataBucketName}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${PrimaryDataBucketName}/athenaresults/*"
       Tags:
         - Key: Environment
           Value: !Ref Environment
 
-  MonitoringFunction:
-    Type: AWS::Lambda::Function
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
     Properties:
-      FunctionName: !Sub "${AWS::StackName}-monitoring"
-      Runtime: python3.11
-      Handler: index.lambda_handler
-      Role: !GetAtt MonitoringFunctionRole.Arn
-      Timeout: 30
-      MemorySize: 128
-      Environment:
-        Variables:
-          LIBRARY_CRAWLER: !Ref LibraryCrawler
-          CARS_CRAWLER: !Ref CarsCrawler
-      Code:
-        ZipFile: |
-          import json
-          import logging
-          import os
-
-          import boto3
-
-          logger = logging.getLogger()
-          logger.setLevel(logging.INFO)
-          glue = boto3.client("glue")
-
-          def lambda_handler(event, context):
-              crawler_names = [os.environ["LIBRARY_CRAWLER"], os.environ["CARS_CRAWLER"]]
-              statuses = {}
-              for name in crawler_names:
-                  try:
-                      response = glue.get_crawler(Name=name)
-                      statuses[name] = response["Crawler"]["State"]
-                  except Exception as exc:
-                      statuses[name] = f"ERROR:{type(exc).__name__}:{exc}"
-              logger.info(json.dumps({"event": event, "crawler_statuses": statuses}, default=str))
-              return {"statusCode": 200, "crawlerStatuses": statuses}
+      GroupDescription: ALB ingress for Text-to-SQL API
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref AlbIngressCidr
       Tags:
         - Key: Environment
           Value: !Ref Environment
 
-  MonitoringScheduleRule:
-    Type: AWS::Events::Rule
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
     Properties:
-      Name: !Sub "${AWS::StackName}-monitoring-schedule"
-      Description: Periodic trigger for monitoring Lambda
-      ScheduleExpression: !Ref MonitoringScheduleExpression
-      State: ENABLED
-      Targets:
-        - Arn: !GetAtt MonitoringFunction.Arn
-          Id: MonitoringFunctionTarget
+      GroupDescription: ECS tasks for Text-to-SQL API
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
 
-  MonitoringInvokePermission:
-    Type: AWS::Lambda::Permission
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !Ref MonitoringFunction
-      Principal: events.amazonaws.com
-      SourceArn: !GetAtt MonitoringScheduleRule.Arn
+      Name: data-arch-ai-alb
+      Scheme: internet-facing
+      Type: application
+      Subnets: !Ref PublicSubnetIds
+      SecurityGroups:
+        - !Ref AlbSecurityGroup
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
 
-# ---------------------------------------------------------------------------
-# Outputs — consumed by the notebook (cell 4/5)
-# ---------------------------------------------------------------------------
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: data-arch-ai-tg
+      Port: 8080
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+      TargetType: ip
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: 200
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: data-architecture-ai
+      Cpu: "512"
+      Memory: "1024"
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt EcsTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt EcsTaskRole.Arn
+      ContainerDefinitions:
+        - Name: api
+          Image: !If
+            - UseCustomImage
+            - !Ref ContainerImage
+            - !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/data-architecture-ai:latest"
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Environment:
+            - Name: GLUE_DB_NAME
+              Value: !Ref GlueDatabaseForQueries
+            - Name: GLUE_DB_NAMES
+              Value: !Sub "${LibraryGlueDatabaseName},${CarsGlueDatabaseName}"
+            - Name: PROJECT_FILES_BUCKET
+              Value: !Ref PrimaryDataBucketName
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: ATHENA_WORKGROUP
+              Value: !Ref AthenaWorkgroupName
+            - Name: ATHENA_USE_MANAGED_RESULTS
+              Value: "true"
+            - Name: BEDROCK_MODEL
+              Value: eu.amazon.nova-micro-v1:0
+            - Name: LOG_LEVEL
+              Value: INFO
+            - Name: PORT
+              Value: "8080"
+            - !If
+              - UseApiKey
+              - Name: API_KEY
+                Value: !Ref ApiKey
+              - !Ref AWS::NoValue
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref AppLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: api
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')" || exit 1
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+
+  EcsService:
+    Type: AWS::ECS::Service
+    DependsOn: HttpListener
+    Properties:
+      ServiceName: data-architecture-ai
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      HealthCheckGracePeriodSeconds: 120
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref PublicSubnetIds
+          SecurityGroups:
+            - !Ref ServiceSecurityGroup
+      LoadBalancers:
+        - ContainerName: api
+          ContainerPort: 8080
+          TargetGroupArn: !Ref TargetGroup
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+
 Outputs:
   ProjectfilesBucketName:
-    Description: Primary S3 data bucket (eu-north-1) — used by the notebook
-    Value: !Ref ProjectDataBucketNorth
+    Description: Primary S3 data bucket (eu-north-1)
+    Value: !Ref PrimaryDataBucketName
 
   ProjectfilesBucketCentralName:
     Description: Secondary S3 data bucket (eu-central-1)
-    Value: !Ref ProjectDataBucketCentral
+    Value: !Ref CentralDataBucketName
 
   LibraryDatabaseName:
     Description: Glue database name for the library dataset
-    Value: !Ref LibraryGlueDatabase
+    Value: !Ref LibraryGlueDatabaseName
 
   CarsDatabaseName:
     Description: Glue database name for the cars dataset
-    Value: !Ref CarsGlueDatabase
+    Value: !Ref CarsGlueDatabaseName
 
   LibraryCrawlerName:
     Description: Glue crawler name for the library dataset
@@ -308,11 +590,22 @@ Outputs:
     Description: Glue crawler name for the cars dataset
     Value: !Ref CarsCrawler
 
-  MonitoringFunctionName:
-    Description: Monitoring Lambda function name
-    Value: !Ref MonitoringFunction
+  AthenaWorkgroupName:
+    Description: Athena workgroup for Text-to-SQL queries
+    Value: !Ref AthenaWorkgroupName
 
-# NOTE: IAM policies have been tightened from the original template.
-# Destructive EC2/SageMaker/Lambda/ECS/QuickSight actions have been removed.
-# Only read, list, and targeted stop/disable actions are permitted.
-# Review and further restrict Resource ARNs before deploying to production.
+  EcrRepositoryUri:
+    Description: ECR repository URI — push the Docker image here before starting tasks
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${AppEcrRepository}"
+
+  LoadBalancerUrl:
+    Description: Public HTTP URL for the Text-to-SQL API
+    Value: !Sub "http://${ApplicationLoadBalancer.DNSName}"
+
+  EcsClusterName:
+    Description: ECS cluster running the API service
+    Value: !Ref EcsCluster
+
+  EcsServiceName:
+    Description: ECS service name (force new deployment after image push)
+    Value: !GetAtt EcsService.Name

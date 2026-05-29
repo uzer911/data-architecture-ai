@@ -23,10 +23,11 @@ pip install -r requirements.txt
 
 Files
 - `requirements.txt` — pinned project dependencies
+- `scripts/streamlit_app.py` — Streamlit chat UI (`make ui`)
 - `setup.sh` — helper script to install deps and optionally upload files
 - `scripts/normalize_cars.py` — ingestion and normalization for `s3_cars_data.csv`
 - `schema/cars_schema.json`, `schema/library_schema.json` — JSON Schema draft-07 definitions
-- `cloudformation-template-validated.yml` — IaC template (IAM, Lambda, EventBridge, S3, Glue)
+- `cloudformation-template-validated.yml` — IaC template (IAM, S3, Glue)
 - `deploy-changeset.sh` — deployment script for creating CloudFormation change sets
 - `DEPLOYMENT.md` — detailed deployment guide with examples
 
@@ -40,9 +41,9 @@ lifecycle rule to expire Athena query results.
 
 Deployment
 - See [DEPLOYMENT.md](DEPLOYMENT.md) for CloudFormation stack creation and change set workflow.
-- Template: `cloudformation-template-validated.yml` (validated, parameters required).
-- Deployment script: `deploy-changeset.sh` (creates change sets with parameters and tagging).
-- Usage: `./deploy-changeset.sh "pool-id" "region1,region2" "rate(15 minutes)"`
+- Template: `cloudformation-template-validated.yml` (validated, with optional `Environment` parameter).
+- Deployment script: `deploy-changeset.sh` (creates change sets with deployment tagging).
+- Usage: `./deploy-changeset.sh`
 
 CloudFormation Outputs (consumed by the notebook)
 | Output Key | Description |
@@ -53,7 +54,11 @@ CloudFormation Outputs (consumed by the notebook)
 | `CarsDatabaseName` | Glue database for cars data |
 | `LibraryCrawlerName` | Glue crawler for library data |
 | `CarsCrawlerName` | Glue crawler for cars data |
-| `MonitoringFunctionName` | Monitoring Lambda function name |
+| `AthenaWorkgroupName` | Athena workgroup for queries |
+| `LoadBalancerUrl` | Public HTTP URL for the Text-to-SQL API |
+| `EcrRepositoryUri` | ECR URI for container images |
+| `EcsClusterName` | ECS cluster name |
+| `EcsServiceName` | ECS service name |
 
 Data & Testing
 - Run `python run_smoke.py` to smoke-test data loading and normalization locally (no AWS calls).
@@ -85,14 +90,20 @@ Production-grade setup
      - `MAX_RESULT_ROWS` (default `200`)
      - `MAX_QUESTION_CHARS` (default `1000`)
      - `LOG_LEVEL` (`DEBUG|INFO|WARNING|ERROR|CRITICAL`)
+     - `ATHENA_WORKGROUP` (default `primary`; use `project-text-to-sql` when deployed via CloudFormation)
+     - `API_KEY` (optional HTTP API auth)
 2. Run the full production gate locally before deployment:
    - `make prod-check`
 3. Run the query CLI in automation-friendly mode when needed:
    - `PYTHONPATH=src python scripts/run_query.py --question "..." --json-output`
-4. Build and run with Docker for consistent execution:
-   - `docker build -t data-architecture-ai .`
-   - `docker run --rm -e GLUE_DB_NAME=... -e PROJECT_FILES_BUCKET=... data-architecture-ai --question "..."`
-5. Keep CI required on pull requests:
+4. Build and run with Docker for consistent execution (ECS needs `linux/amd64`; use `scripts/push_ecr.sh` on Apple Silicon):
+   - `DESIRED_COUNT=1 ./scripts/push_ecr.sh`
+   - Local run: `docker build --platform linux/amd64 -t data-architecture-ai .`
+   - API: `GET /health`, `POST /query` with `{"question": "..."}`
+5. Deploy to ECS Fargate (recommended production path):
+   - `./deploy-changeset.sh` → execute change set → `DESIRED_COUNT=1 ./scripts/push_ecr.sh`
+   - See [DEPLOYMENT.md](DEPLOYMENT.md) for full ECS workflow
+6. Keep CI required on pull requests:
    - Workflow: `.github/workflows/ci.yml`
    - Gates: compile, unit tests, smoke test
 
@@ -102,7 +113,16 @@ Set `CFN_STACK_NAME` before launching Jupyter to avoid editing the placeholder i
 export CFN_STACK_NAME=gbl-ai-project-monitoring-stack
 ```
 
+Streamlit UI
+```bash
+export GLUE_DB_NAME=project_library_db
+export PROJECT_FILES_BUCKET=langchain-<account-id>-eu-north-1
+export ATHENA_WORKGROUP=project-text-to-sql
+export ATHENA_USE_MANAGED_RESULTS=true
+make ui
+```
+Opens http://localhost:8501 — or set `API_URL` to use the deployed ECS API. See [DEPLOYMENT.md](DEPLOYMENT.md).
+
 Next steps
 - Review `mda_text_to_sql_langchain_bedrock.ipynb` and set `CFN_STACK_NAME`.
 - Run `deploy-changeset.sh` to create a change set and review before deploying to AWS.
-- Monitoring Lambda code is embedded inline in `cloudformation-template-validated.yml`; no separate Lambda zip upload is required.

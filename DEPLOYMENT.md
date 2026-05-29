@@ -5,7 +5,7 @@ This guide shows how to deploy the `cloudformation-template-validated.yml` templ
 ## Prerequisites
 
 - AWS CLI installed and configured with credentials
-- IAM permissions to create CloudFormation stacks, IAM roles, and Lambda functions
+- IAM permissions to create CloudFormation stacks, IAM roles, S3 resources, and Glue resources
 - A deployed AWS region
 
 ## Quick Start
@@ -14,13 +14,8 @@ This guide shows how to deploy the `cloudformation-template-validated.yml` templ
 
 ```bash
 chmod +x deploy-changeset.sh
-./deploy-changeset.sh "my-pool-id" "eu-north-1,eu-central-1" "rate(15 minutes)"
+./deploy-changeset.sh
 ```
-
-**Parameters:**
-- `my-pool-id`: AI Project Pool ID (required; provide your actual pool ID)
-- `eu-north-1,eu-central-1`: Comma-separated list of regions (optional; defaults to current AWS_REGION)
-- `rate(15 minutes)`: Monitoring Lambda schedule expression (optional; defaults to `rate(15 minutes)`)
 
 **S3 Buckets created:**
 - `langchain-<account-id>-eu-north-1` — primary data bucket
@@ -32,9 +27,6 @@ chmod +x deploy-changeset.sh
 ```bash
 export AWS_REGION="eu-north-1"
 export STACK_NAME="gbl-ai-project-monitoring-stack"
-export AI_POOL_ID="my-pool-id"
-export AI_REGIONS="eu-north-1"
-export MONITORING_SCHEDULE="rate(15 minutes)"
 ```
 
 #### 2. Validate template
@@ -44,24 +36,47 @@ aws cloudformation validate-template \
   --region "$AWS_REGION"
 ```
 
-#### 3. Create a change set
+#### 3. Resolve VPC parameters and create a change set
+
+On the **first deploy** the stack does not exist yet. You must pass `--change-set-type CREATE`.
+Use JSON for `--parameters` so comma-separated subnet IDs are not split by the CLI.
+
 ```bash
 CHANGE_SET_NAME="${STACK_NAME}-changeset-$(date +%s)"
+
+eval "$(bash scripts/get_vpc_params.sh | grep -E '^(VPC_ID|PUBLIC_SUBNET_IDS)=')"
+
+CFN_PARAMETERS=$(cat <<EOF
+[
+  {"ParameterKey": "VpcId", "ParameterValue": "${VPC_ID}"},
+  {"ParameterKey": "PublicSubnetIds", "ParameterValue": "${PUBLIC_SUBNET_IDS}"},
+  {"ParameterKey": "DesiredCount", "ParameterValue": "0"}
+]
+EOF
+)
+
+# First deploy: CREATE. Later updates: UPDATE.
+if aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+  CHANGE_SET_TYPE="UPDATE"
+else
+  CHANGE_SET_TYPE="CREATE"
+fi
 
 aws cloudformation create-change-set \
   --stack-name "$STACK_NAME" \
   --change-set-name "$CHANGE_SET_NAME" \
+  --change-set-type "$CHANGE_SET_TYPE" \
   --template-body file://cloudformation-template-validated.yml \
-  --parameters \
-    ParameterKey=AiProjectPoolId,ParameterValue="${AI_POOL_ID}" \
-    ParameterKey=AiProjectRegions,ParameterValue="${AI_REGIONS}" \
-    ParameterKey=MonitoringScheduleExpression,ParameterValue="${MONITORING_SCHEDULE}" \
   --capabilities CAPABILITY_IAM \
   --region "$AWS_REGION" \
+  --parameters "$CFN_PARAMETERS" \
   --tags \
     "Key=DeployedBy,Value=$(aws iam get-user --query 'User.UserName' --output text)" \
     "Key=Environment,Value=production"
 ```
+
+> **Troubleshooting:** If you see `Stack [...] does not exist`, add `--change-set-type CREATE`.
+> Or use `./deploy-changeset.sh`, which sets this automatically.
 
 #### 4. Review the change set
 ```bash
@@ -105,21 +120,7 @@ A **change set** is a preview of changes that will be applied to your CloudForma
 - **Rollback capability**: Revert if needed
 
 ## Parameters Explained
-
-### AiProjectPoolId
-- **Type**: String
-- **Description**: Identifier for the AI Project pool your monitoring Lambda will target
-- **Example**: `my-ai-projects-pool`, `prod-pool-1`
-
-### AiProjectRegions
-- **Type**: String (comma-separated)
-- **Description**: AWS regions where the monitoring function operates
-- **Example**: `eu-north-1`, `eu-north-1,eu-central-1`
-
-### MonitoringScheduleExpression
-- **Type**: String
-- **Description**: EventBridge schedule expression used to trigger the monitoring Lambda
-- **Example**: `rate(15 minutes)`, `rate(1 hour)`, `cron(0/30 * * * ? *)`
+The stack uses only the `Environment` template parameter (default: `production`), so no required parameters are needed for the deployment script path above.
 
 ## Capabilities
 
@@ -155,17 +156,246 @@ aws cloudformation wait stack-delete-complete \
 
 ## Troubleshooting
 
+### Resource name conflict (bucket, Athena workgroup, Glue DB already exists)
+
+If stack creation fails with errors like:
+
+```text
+Resource of type 'AWS::S3::Bucket' with identifier 'langchain-...' already exists.
+Resource of type 'AWS::Athena::WorkGroup' with identifier 'project-text-to-sql' already exists.
+```
+
+Those resources were created outside this stack (or by a previous failed deploy). The deploy script now **detects and reuses** them automatically:
+
+```bash
+bash scripts/detect_existing_resources.sh   # preview what will be reused vs created
+./deploy-changeset.sh                       # passes Create*=false for existing resources
+```
+
+You should **not** see `ProjectDataBucketNorth` or `ProjectAthenaWorkgroup` in the change set summary when reuse is working.
+
+### Stuck stack (`REVIEW_IN_PROGRESS` or `ROLLBACK_COMPLETE`)
+
+Delete the failed stack, then redeploy:
+
+```bash
+aws cloudformation delete-stack \
+  --stack-name gbl-ai-project-monitoring-stack \
+  --region eu-north-1
+
+aws cloudformation wait stack-delete-complete \
+  --stack-name gbl-ai-project-monitoring-stack \
+  --region eu-north-1
+
+./deploy-changeset.sh
+```
+
+### CannotPullContainerError: platform linux/amd64
+
+ECS Fargate requires **linux/amd64** images. If you built on an **Apple Silicon Mac** without cross-compilation, the image in ECR is **arm64** only.
+
+Rebuild and push with the project script (it builds for amd64 automatically):
+
+```bash
+DESIRED_COUNT=1 ./scripts/push_ecr.sh
+```
+
+Or manually:
+
+```bash
+docker buildx build --platform linux/amd64 -t <ecr-uri>:latest --push .
+```
+
+### Athena: ManagedQueryResultsConfiguration and ResultConfiguration
+
+If you see:
+
+```text
+ManagedQueryResultsConfiguration and ResultConfiguration cannot be set together
+```
+
+Your Athena workgroup (`project-text-to-sql`) uses **managed query results**. The app now detects this and does not send an S3 staging path. **Redeploy the ECS image** after pulling the latest code:
+
+```bash
+DESIRED_COUNT=1 ./scripts/push_ecr.sh
+```
+
+For local Streamlit/API testing, restart the app after `git pull`.
+
+### API error 500: Bedrock inference profile required
+
+If logs show:
+
+```text
+Invocation of model ID amazon.nova-micro-v1:0 with on-demand throughput isn't supported.
+Retry your request with the ID or ARN of an inference profile
+```
+
+Set:
+
+```bash
+export BEDROCK_MODEL=eu.amazon.nova-micro-v1:0
+```
+
+Redeploy ECS (`./scripts/push_ecr.sh`) or restart local Streamlit. The app auto-maps legacy model IDs to `eu.amazon.nova-micro-v1:0` in EU regions.
+
+### Athena AccessDenied: ListTableMetadata
+
+LangChain's SQL layer calls `athena:ListTableMetadata` when connecting. The ECS task role must include metadata permissions (added in the template).
+
+Update the stack, then restart ECS tasks:
+
+```bash
+./deploy-changeset.sh
+# execute the change set, wait for UPDATE_COMPLETE
+
+aws ecs update-service \
+  --cluster data-architecture-ai \
+  --service data-architecture-ai \
+  --force-new-deployment \
+  --region eu-north-1
+```
+
+Or attach the missing actions to role `gbl-ai-project-monitoring-stack-EcsTaskRole-*` in IAM Console:
+`athena:ListTableMetadata`, `athena:GetTableMetadata`, `athena:ListDatabases`, `athena:GetDatabase`, `athena:GetDataCatalog` on `arn:aws:athena:REGION:ACCOUNT:datacatalog/*` and `database/*`.
+
 ### Change set shows no changes
 - If the change set has no changes, the stack either already exists with identical parameters, or there's a syntax issue. Review the template.
 
 ### Insufficient permissions
-- Ensure your IAM user has `cloudformation:*`, `iam:*`, `lambda:*`, `logs:*`, and `events:*` permissions.
+- Ensure your IAM user has `cloudformation:*`, `iam:*`, `s3:*`, and `glue:*` permissions.
 
 ### Template format error
 - Validate the YAML syntax: `aws cloudformation validate-template --template-body file://cloudformation-template-validated.yml`
 
 ### Stack creation timeout
 - If the stack creation takes too long, check CloudFormation events for errors: `aws cloudformation describe-stack-events --stack-name "$STACK_NAME" --region "$AWS_REGION"`
+
+## Streamlit UI (chat)
+
+Browser interface for asking questions (local AWS or remote ECS API).
+
+### Local mode (your laptop uses Bedrock + Athena directly)
+
+```bash
+export GLUE_DB_NAME=project_library_db
+export PROJECT_FILES_BUCKET=langchain-<account-id>-eu-north-1
+export ATHENA_WORKGROUP=project-text-to-sql
+export ATHENA_USE_MANAGED_RESULTS=true
+pip install -r requirements.txt
+make ui
+# or: PYTHONPATH=src streamlit run scripts/streamlit_app.py
+```
+
+Opens at **http://localhost:8501**
+
+### Remote mode (calls ECS API behind the load balancer)
+
+```bash
+export API_URL=http://<your-alb-dns>
+export API_KEY=your-key   # only if you set ApiKey in CloudFormation
+streamlit run scripts/streamlit_app.py
+```
+
+## ECS Fargate API (production serving layer)
+
+The stack provisions an **ECS Fargate** service behind an **Application Load Balancer** running the Text-to-SQL HTTP API.
+
+### Resources added
+
+| Resource | Purpose |
+|----------|---------|
+| ECR repository | `data-architecture-ai` container images |
+| ECS cluster + Fargate service | Runs the API container |
+| Application Load Balancer | Public HTTP endpoint on port 80 |
+| IAM task role | Bedrock, Glue, Athena, S3 access (scoped) |
+| Athena workgroup | `project-text-to-sql` with 1 GB scan limit |
+
+### Deploy workflow
+
+#### 1. Deploy infrastructure (tasks start at 0 until image exists)
+
+```bash
+./deploy-changeset.sh
+# Review, then execute the change set
+aws cloudformation execute-change-set \
+  --stack-name gbl-ai-project-monitoring-stack \
+  --change-set-name <changeset-name> \
+  --region eu-north-1
+```
+
+#### 2. Build, push, and start the API
+
+```bash
+chmod +x scripts/push_ecr.sh scripts/get_vpc_params.sh
+DESIRED_COUNT=1 ./scripts/push_ecr.sh
+```
+
+#### 3. Get the API URL
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name gbl-ai-project-monitoring-stack \
+  --region eu-north-1 \
+  --query "Stacks[0].Outputs[?OutputKey=='LoadBalancerUrl'].OutputValue" \
+  --output text
+```
+
+#### 4. Call the API
+
+```bash
+ALB_URL="http://your-alb-dns.amazonaws.com"
+
+curl "${ALB_URL}/health"
+
+curl -X POST "${ALB_URL}/query" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How many books are in the library?"}'
+```
+
+If you set the `ApiKey` stack parameter, include the header:
+
+```bash
+curl -X POST "${ALB_URL}/query" \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: your-secret-key" \
+  -d '{"question": "How many books are in the library?"}'
+```
+
+### Stack parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `VpcId` | (from script) | VPC for ALB and Fargate |
+| `PublicSubnetIds` | (from script) | Public subnets (Fargate uses assignPublicIp) |
+| `DesiredCount` | `0` | Set to `1` after pushing the container image |
+| `ContainerImage` | ECR `:latest` | Override with a specific image URI |
+| `ApiKey` | empty | Optional `X-Api-Key` header value |
+| `AlbIngressCidr` | `0.0.0.0/0` | Restrict in production |
+| `GlueDatabaseForQueries` | `project_library_db` | Primary Glue DB for Athena connection |
+
+### Local API development
+
+```bash
+export GLUE_DB_NAME=project_library_db
+export PROJECT_FILES_BUCKET=langchain-<account-id>-eu-north-1
+export ATHENA_WORKGROUP=project-text-to-sql
+export ATHENA_USE_MANAGED_RESULTS=true
+PYTHONPATH=src python scripts/serve.py
+# curl http://localhost:8080/health
+```
+
+### CLI mode (Docker)
+
+The default Docker entrypoint runs the HTTP API. For one-off CLI queries:
+
+```bash
+docker run --rm \
+  -e GLUE_DB_NAME=project_library_db \
+  -e PROJECT_FILES_BUCKET=langchain-<account-id>-eu-north-1 \
+  --entrypoint python \
+  data-architecture-ai /app/scripts/run_query.py --question "How many books?"
+```
 
 ## References
 

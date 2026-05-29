@@ -7,6 +7,7 @@ from typing import Iterable, Set, Tuple
 import boto3
 from botocore.exceptions import ClientError
 
+from .config import resolve_bedrock_model
 from .secrets import get_secret_dict
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ class LLMSQLService:
         self.db = db
         self.glue_catalog = glue_catalog
         self.allowed_tables = allowed_tables
-        self.bedrock_model = bedrock_model
+        self.bedrock_model = resolve_bedrock_model(bedrock_model, region or 'eu-north-1')
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
         self.region = region
@@ -94,7 +95,10 @@ class LLMSQLService:
                 if aws_token:
                     bkwargs['aws_session_token'] = aws_token
                 if 'bedrock_model' in sec:
-                    self.bedrock_model = sec['bedrock_model']
+                    self.bedrock_model = resolve_bedrock_model(
+                        sec['bedrock_model'],
+                        region or 'eu-north-1',
+                    )
             except ClientError:
                 logger.exception('Failed to fetch secret %s', secrets_manager_secret)
 
