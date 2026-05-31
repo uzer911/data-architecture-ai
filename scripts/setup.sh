@@ -11,5 +11,5 @@ printf "Setup complete.\nVirtual environment: .venv\nActivate with: source .venv
 
 # Optional: copy data to an S3 staging bucket (uncomment and set BUCKET)
 # BUCKET=my-project-bucket
-# aws s3 cp s3_library_data.json s3://$BUCKET/library-data/
-# aws s3 cp s3_cars_data.csv s3://$BUCKET/cars-data/
+# aws s3 cp data/s3_library_data.json s3://$BUCKET/library-data/
+# aws s3 cp data/s3_cars_data.csv s3://$BUCKET/cars-data/

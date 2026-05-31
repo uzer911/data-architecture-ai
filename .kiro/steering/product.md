@@ -1,18 +1,19 @@
-# Product
+# Product Summary
 
-This project demonstrates a **Text-to-SQL** pipeline using Generative AI on AWS. It allows users to query structured datasets using natural language, which is translated into SQL by an LLM and executed against a database.
+CloudAge Data Architecture with Generative AI — a Text-to-SQL service that converts natural language questions into SQL queries using LangChain and AWS Bedrock (Amazon Nova models).
 
-## Core Capability
+## Core Capabilities
 
-- Natural language → SQL query generation via LangChain + Amazon Bedrock
-- Two sample datasets: a cars catalog (CSV) and a library catalog (NDJSON)
-- Local smoke testing with SQLite; production queries run via Amazon Athena
+- Natural language to SQL translation via LLM (Bedrock)
+- Multi-connector framework supporting Athena, Redshift, RDS (PostgreSQL/MySQL), Snowflake, and Databricks
+- Read-only query execution with safety guardrails (allowlist validation, automatic LIMIT enforcement, max question length)
+- HTTP API (FastAPI) deployed on ECS Fargate
+- Streamlit chat UI for interactive querying
+- AWS Glue catalog integration for schema discovery
+- Infrastructure as Code via CloudFormation (VPC, ECS, Lambda, Glue, S3, Aurora Serverless v2)
 
-## Target Use Case
+## Target Environment
 
-Data exploration and analytics for non-technical users who want to query structured data without writing SQL. The project serves as a reference architecture and lab environment for AI-powered data access on AWS.
-
-## Key Datasets
-
-- `s3_cars_data.csv` — automobile specs (make, price, horsepower, mpg, etc.)
-- `s3_library_data.json` — book catalog (title, author, genre, pub_date) in NDJSON format
+- AWS region: eu-north-1 (primary)
+- Deployment: ECS Fargate behind ALB, Docker containers (linux/amd64)
+- Data sources configured via YAML files in `config/connections/`

@@ -1,0 +1,12 @@
+# Amazon RDS PostgreSQL connection
+# Copy to rds-postgres.yaml and fill in your values
+name: RDS PostgreSQL
+type: rds_postgres
+enabled: false
+settings:
+  host: mydb.xxxx.eu-north-1.rds.amazonaws.com
+  port: 5432
+  database: app_db
+  schema: public
+  user_from_secret: rds/postgres-creds  # AWS Secrets Manager secret name
+  region: eu-north-1

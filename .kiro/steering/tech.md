@@ -1,71 +1,64 @@
-# Tech Stack
+# Tech Stack & Build System
 
 ## Language & Runtime
-- Python 3.x
-- Jupyter Notebook (`.ipynb`) for interactive exploration
+
+- Python 3.11
+- Virtual environment: `.venv/`
 
 ## Key Libraries
-| Library | Purpose |
-|---|---|
-| `langchain` + `langchain-aws` | LLM orchestration and Text-to-SQL chain |
-| `boto3` | AWS SDK — Bedrock, S3, and other AWS service calls |
-| `pyathena` | Amazon Athena query execution via Python |
-| `sqlalchemy` | Database abstraction layer |
-| `pandas` | Data loading, normalization, and transformation |
-| `requests` | HTTP utility |
 
-## AI / AWS Services
-- **Amazon Bedrock** — LLM inference (model invoked via LangChain)
-- **Amazon Athena** — Serverless SQL query execution over S3 data
-- **AWS S3** — Data lake storage for CSV and JSON datasets
-- **AWS CloudFormation** — Infrastructure provisioning (IAM roles, S3, Glue)
+| Library | Purpose |
+|---------|---------|
+| langchain, langchain-community, langchain-experimental | LLM orchestration, text-to-SQL chains |
+| boto3 | AWS SDK (Glue, Bedrock, S3, Secrets Manager) |
+| pyathena | Athena JDBC-style connector |
+| sqlalchemy | Database abstraction for RDS/Redshift/Snowflake |
+| fastapi + uvicorn | HTTP API server |
+| streamlit | Chat UI |
+| pydantic (v1) | Settings validation, request/response models |
+| pandas | Data manipulation |
+| pyyaml | Connection config parsing |
+| hypothesis | Property-based testing |
+| python-dotenv | Local .env loading |
+
+## Build & Task Runner
+
+Uses `make` as the task runner. Key targets:
+
+```bash
+make check       # Compile-check all Python (syntax gate)
+make test        # Unit tests (unittest, PYTHONPATH=src)
+make smoke       # Smoke test — local data, no AWS calls
+make prod-check  # All three above in sequence (CI gate)
+make ui          # Start Streamlit chat UI
+make deploy      # CloudFormation change set (review mode)
+make deploy-all  # Full auto: deploy + build image + start ECS
+make setup       # Create venv and install deps
+```
+
+## Testing
+
+- Framework: `unittest` (stdlib)
+- Test location: `tests/test_*.py`
+- Run: `PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py" -v`
+- Smoke test: `python run_smoke.py` (no AWS calls)
+- Property-based testing: `hypothesis` available
+
+## CI/CD
+
+- GitHub Actions: `.github/workflows/ci.yml`
+- Gates on every push/PR: compile check → unit tests → smoke test
+- Deployment: `deploy-changeset.sh` (CloudFormation change sets)
+- Container: `scripts/push_ecr.sh` (builds linux/amd64, pushes to ECR)
 
 ## Infrastructure
-- Template: `cloudformation-template-validated.yml`
-- Requires `CAPABILITY_IAM` (creates IAM roles and policies)
-- Stack name: `gbl-ai-project-monitoring-stack`
-- Parameters: Optional `Environment` (default `production`)
 
-## Common Commands
+- CloudFormation templates: `cloudformation-template-validated.yml` (main), `cloudformation-rds-aurora.yml` (database)
+- Docker: Python 3.11-slim, non-root user, healthcheck on `/health`
+- Platform: linux/amd64 (ECS Fargate)
 
-### Environment Setup
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+## Configuration
 
-Or use the helper script:
-```bash
-./setup.sh
-```
-
-### Smoke Test (local, no AWS calls)
-```bash
-python run_smoke.py
-```
-
-### Data Normalization
-```bash
-python scripts/normalize_cars.py
-```
-Produces `s3_cars_data_normalized.csv`.
-
-### Deploy to AWS (CloudFormation change set)
-```bash
-./deploy-changeset.sh
-```
-
-### Validate CloudFormation Template
-```bash
-aws cloudformation validate-template \
-  --template-body file://cloudformation-template-validated.yml \
-  --region "$AWS_REGION"
-```
-
-## AWS Credentials
-Configure before running any AWS-dependent code:
-```bash
-aws configure
-# or set environment variables: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
-```
+- Environment variables validated via `pydantic.BaseSettings` in `src/llm_sql/config.py`
+- `.env` file supported for local dev (see `.env.template`)
+- Connection configs: `config/connections/*.yaml` (one file per data source)

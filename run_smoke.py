@@ -9,9 +9,10 @@ import sys
 import pandas as pd
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LIB_JSON = os.path.join(BASE_DIR, 's3_library_data.json')
-CARS_CSV = os.path.join(BASE_DIR, 's3_cars_data.csv')
-NORMALIZED_CARS_CSV = os.path.join(BASE_DIR, 's3_cars_data_normalized.csv')
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+LIB_JSON = os.path.join(DATA_DIR, 's3_library_data.json')
+CARS_CSV = os.path.join(DATA_DIR, 's3_cars_data.csv')
+NORMALIZED_CARS_CSV = os.path.join(DATA_DIR, 's3_cars_data_normalized.csv')
 
 # Word-to-integer map shared with scripts/normalize_cars.py
 WORD_MAP = {

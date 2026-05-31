@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-CSV_PATH = os.path.join(os.path.dirname(__file__), '..', 's3_cars_data.csv')
+CSV_PATH = os.path.join(os.path.dirname(__file__), '..', 'data', 's3_cars_data.csv')
 
 
 def build_local_catalog(table_name: str, df: pd.DataFrame) -> tuple:

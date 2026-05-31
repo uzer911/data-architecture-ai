@@ -1,0 +1,12 @@
+# Snowflake connection
+# Copy to snowflake.yaml and fill in your values
+name: Snowflake DWH
+type: snowflake
+enabled: false
+settings:
+  account: xy12345.eu-west-1
+  warehouse: COMPUTE_WH
+  database: ANALYTICS
+  schema: PUBLIC
+  role: ANALYST_ROLE
+  user_from_secret: snowflake/prod-creds  # AWS Secrets Manager secret name

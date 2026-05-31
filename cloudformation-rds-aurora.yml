@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Aurora Serverless v2 (MySQL-compatible) — deployed in the VPC created by the
+  main cgs-ai-analyst-agent-project stack. Scales to zero when idle.
+  Credentials are auto-generated and stored in AWS Secrets Manager.
+
+Parameters:
+
+  MainStackName:
+    Type: String
+    Default: cgs-ai-analyst-agent-project
+    Description: Name of the main stack (to import VPC/subnet exports)
+
+  DatabaseName:
+    Type: String
+    Default: analyst_db
+    Description: Initial database name created in the Aurora cluster
+
+  MinACU:
+    Type: Number
+    Default: 0.5
+    MinValue: 0.5
+    MaxValue: 128
+    Description: >
+      Minimum Aurora Capacity Units (0.5 = scales to near-zero when idle).
+      Each ACU is ~2 GB RAM.
+
+  MaxACU:
+    Type: Number
+    Default: 4
+    MinValue: 0.5
+    MaxValue: 128
+    Description: Maximum Aurora Capacity Units (4 ACU = 8 GB RAM)
+
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues: [production, staging, development]
+    Description: Environment tag
+
+Resources:
+
+  # ── Credentials (auto-generated, stored in Secrets Manager) ────────────
+  AuroraSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}/aurora-credentials"
+      Description: Auto-generated credentials for Aurora Serverless v2
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "admin"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── Security Group ─────────────────────────────────────────────────────
+  AuroraSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Aurora Serverless v2 - allow MySQL from ECS tasks
+      VpcId: !ImportValue
+        Fn::Sub: "${MainStackName}-VpcId"
+      SecurityGroupIngress:
+        # Allow MySQL (3306) from ECS tasks
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !ImportValue
+            Fn::Sub: "${MainStackName}-ServiceSecurityGroup"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-aurora-sg"
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── Subnet Group ───────────────────────────────────────────────────────
+  AuroraSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Private subnets for Aurora Serverless v2
+      SubnetIds:
+        - !ImportValue
+          Fn::Sub: "${MainStackName}-PrivateSubnet1"
+        - !ImportValue
+          Fn::Sub: "${MainStackName}-PrivateSubnet2"
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-aurora-subnets"
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── Aurora Cluster (Serverless v2) ─────────────────────────────────────
+  AuroraCluster:
+    Type: AWS::RDS::DBCluster
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      Engine: aurora-mysql
+      EngineVersion: "8.0.mysql_aurora.3.08.2"
+      DatabaseName: !Ref DatabaseName
+      MasterUsername: !Sub "{{resolve:secretsmanager:${AuroraSecret}:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${AuroraSecret}:SecretString:password}}"
+      DBSubnetGroupName: !Ref AuroraSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref AuroraSecurityGroup
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: !Ref MinACU
+        MaxCapacity: !Ref MaxACU
+      StorageEncrypted: true
+      BackupRetentionPeriod: 7
+      DeletionProtection: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-aurora-cluster"
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── Aurora Instance (Serverless v2 requires at least one) ──────────────
+  AuroraInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: aurora-mysql
+      DBClusterIdentifier: !Ref AuroraCluster
+      DBInstanceClass: db.serverless
+      PubliclyAccessible: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-aurora-instance"
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── Attach secret to the cluster (enables rotation) ────────────────────
+  SecretAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref AuroraSecret
+      TargetId: !Ref AuroraCluster
+      TargetType: AWS::RDS::DBCluster
+
+Outputs:
+
+  ClusterEndpoint:
+    Description: Aurora cluster writer endpoint (use in config/connections/rds-mysql.yaml)
+    Value: !GetAtt AuroraCluster.Endpoint.Address
+    Export:
+      Name: !Sub "${AWS::StackName}-ClusterEndpoint"
+
+  ClusterPort:
+    Description: Aurora cluster port
+    Value: !GetAtt AuroraCluster.Endpoint.Port
+
+  DatabaseName:
+    Description: Initial database name
+    Value: !Ref DatabaseName
+
+  SecretArn:
+    Description: Secrets Manager ARN for credentials (use as user_from_secret)
+    Value: !Ref AuroraSecret
+    Export:
+      Name: !Sub "${AWS::StackName}-SecretArn"
+
+  SecretName:
+    Description: Secret name to use in config/connections/rds-mysql.yaml
+    Value: !Sub "${AWS::StackName}/aurora-credentials"
+
+  ConnectionConfig:
+    Description: >
+      Copy this into config/connections/rds-mysql.yaml settings section
+    Value: !Sub |
+      host: ${AuroraCluster.Endpoint.Address}
+      port: ${AuroraCluster.Endpoint.Port}
+      database: ${DatabaseName}
+      user_from_secret: ${AWS::StackName}/aurora-credentials
+      region: ${AWS::Region}

@@ -10,9 +10,6 @@ from sqlalchemy import create_engine, text
 from .config import get_settings
 from .core import LLMSQLService, parse_catalog
 
-# Workgroups created for this project that use Athena managed query results.
-_MANAGED_RESULTS_WORKGROUPS = frozenset({'project-text-to-sql'})
-
 
 @lru_cache(maxsize=32)
 def workgroup_uses_managed_results(workgroup: str, region: str) -> bool:
@@ -27,12 +24,16 @@ def workgroup_uses_managed_results(workgroup: str, region: str) -> bool:
 
 
 def should_omit_s3_staging_dir(workgroup: str, region: str) -> bool:
-    """Decide whether to skip S3 ResultConfiguration for this workgroup."""
+    """Decide whether to skip S3 ResultConfiguration for this workgroup.
+
+    Resolution order:
+    1. ATHENA_USE_MANAGED_RESULTS env var — explicit operator override (True/False).
+    2. Live athena:GetWorkGroup API call — source of truth for the workgroup config.
+    3. False as safe default if the API call fails (staging dir is included).
+    """
     settings = get_settings()
     if settings.athena_use_managed_results is not None:
         return settings.athena_use_managed_results
-    if workgroup in _MANAGED_RESULTS_WORKGROUPS:
-        return True
     try:
         return workgroup_uses_managed_results(workgroup, region)
     except Exception:

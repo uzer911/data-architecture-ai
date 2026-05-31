@@ -3,6 +3,7 @@ __pycache__/
 **/__pycache__/
 *.py[cod]
 .DS_Store
+**/.DS_Store
 .env
 *.log
 .pytest_cache/
@@ -10,4 +11,7 @@ __pycache__/
 .ipynb_checkpoints/
 .vscode/
 .idea/
-s3_cars_data_normalized.csv
+data/s3_cars_data_normalized.csv
+.hypothesis/
+config/connections/*.yaml
+!config/connections/*.yaml.template

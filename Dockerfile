@@ -10,6 +10,7 @@ COPY requirements.txt /app/
 RUN pip install --upgrade pip && pip install -r requirements.txt
 COPY src /app/src
 COPY scripts /app/scripts
+COPY data /app/data
 USER app
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \

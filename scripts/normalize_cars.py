@@ -3,8 +3,9 @@ import pandas as pd
 
 # Resolve paths relative to the project root (one level up from scripts/)
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CSV = os.path.join(PROJECT_ROOT, 's3_cars_data.csv')
-OUTPUT_CSV = os.path.join(PROJECT_ROOT, 's3_cars_data_normalized.csv')
+DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
+CSV = os.path.join(DATA_DIR, 's3_cars_data.csv')
+OUTPUT_CSV = os.path.join(DATA_DIR, 's3_cars_data_normalized.csv')
 
 
 def normalize(input_path: str = CSV, output_path: str = OUTPUT_CSV) -> pd.DataFrame:

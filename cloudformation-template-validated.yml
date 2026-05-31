@@ -1,6 +1,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
-  Data architecture stack — S3, Glue, Athena, and ECS Fargate API.
+  Data architecture stack — VPC, S3, Glue, Athena, and ECS Fargate API.
+  The stack creates its own VPC with public subnets (ALB) and private subnets
+  (ECS tasks). All AWS service traffic uses VPC endpoints — no NAT gateway needed.
   Set Create* parameters to false to reuse resources that already exist in your account.
 
 Parameters:
@@ -14,14 +16,33 @@ Parameters:
       - staging
       - development
 
-  VpcId:
-    Type: AWS::EC2::VPC::Id
-    Description: VPC for the ECS service and load balancer (default VPC is fine for dev)
+  # ── VPC CIDR ──────────────────────────────────────────────────────────────
+  VpcCidr:
+    Type: String
+    Default: "10.0.0.0/16"
+    Description: CIDR block for the stack-managed VPC
 
-  PublicSubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
-    Description: Public subnets for ALB and Fargate tasks (assignPublicIp enabled)
+  PublicSubnet1Cidr:
+    Type: String
+    Default: "10.0.0.0/24"
+    Description: Public subnet 1 (ALB) — AZ a
 
+  PublicSubnet2Cidr:
+    Type: String
+    Default: "10.0.1.0/24"
+    Description: Public subnet 2 (ALB) — AZ b
+
+  PrivateSubnet1Cidr:
+    Type: String
+    Default: "10.0.2.0/24"
+    Description: Private subnet 1 (ECS tasks) — AZ a
+
+  PrivateSubnet2Cidr:
+    Type: String
+    Default: "10.0.3.0/24"
+    Description: Private subnet 2 (ECS tasks) — AZ b
+
+  # ── ECS / Container ───────────────────────────────────────────────────────
   DesiredCount:
     Type: Number
     Default: 0
@@ -48,6 +69,7 @@ Parameters:
     Default: 0.0.0.0/0
     Description: CIDR allowed to reach the load balancer on HTTP (restrict in production)
 
+  # ── Glue / Athena ─────────────────────────────────────────────────────────
   GlueDatabaseForQueries:
     Type: String
     Default: project_library_db
@@ -58,23 +80,13 @@ Parameters:
 
   PrimaryDataBucketName:
     Type: String
-    Description: Primary S3 data bucket name (eu-north-1)
-
-  CentralDataBucketName:
-    Type: String
-    Description: Secondary S3 data bucket name (logical eu-central-1 suffix)
+    Description: Primary S3 data bucket name
 
   CreatePrimaryDataBucket:
     Type: String
     Default: "false"
     AllowedValues: ["true", "false"]
     Description: Set false if the primary bucket already exists
-
-  CreateCentralDataBucket:
-    Type: String
-    Default: "true"
-    AllowedValues: ["true", "false"]
-    Description: Set false if the central bucket already exists
 
   AthenaWorkgroupName:
     Type: String
@@ -109,25 +121,320 @@ Parameters:
     AllowedValues: ["true", "false"]
     Description: Set false if the cars Glue database already exists
 
+  CreateAppLogGroup:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Set false if the CloudWatch log group /ecs/data-architecture-ai already exists
+
+
 Conditions:
   UseCustomImage: !Not [!Equals [!Ref ContainerImage, ""]]
   UseApiKey: !Not [!Equals [!Ref ApiKey, ""]]
   CreatePrimaryDataBucket: !Equals [!Ref CreatePrimaryDataBucket, "true"]
-  CreateCentralDataBucket: !Equals [!Ref CreateCentralDataBucket, "true"]
   CreateAthenaWorkgroup: !Equals [!Ref CreateAthenaWorkgroup, "true"]
   CreateLibraryGlueDatabase: !Equals [!Ref CreateLibraryGlueDatabase, "true"]
   CreateCarsGlueDatabase: !Equals [!Ref CreateCarsGlueDatabase, "true"]
+  CreateAppLogGroup: !Equals [!Ref CreateAppLogGroup, "true"]
 
 Metadata:
-  AwsAiProjectsManagedResource:
-    - GblAiProjectMonitoring: 22
-  GblIamSecurity: "1.0.0"
+  CgsAiAnalystAgentProject:
+    - ProjectVersion: 22
+  IamSecurity: "1.0.0"
 
 Resources:
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # VPC — created by this stack so ALB and ECS always share the same network
+  # ══════════════════════════════════════════════════════════════════════════
+
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true   # required for PrivateDnsEnabled on interface endpoints
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vpc"
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ── Internet Gateway (ALB needs outbound internet) ────────────────────────
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-igw"
+        - Key: Environment
+          Value: !Ref Environment
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # ── Public subnets (ALB only) ─────────────────────────────────────────────
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-1"
+        - Key: Environment
+          Value: !Ref Environment
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-2"
+        - Key: Environment
+          Value: !Ref Environment
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-rt"
+        - Key: Environment
+          Value: !Ref Environment
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+
+  # ── Private subnets (ECS tasks — no NAT gateway) ──────────────────────────
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateSubnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-1"
+        - Key: Environment
+          Value: !Ref Environment
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateSubnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-2"
+        - Key: Environment
+          Value: !Ref Environment
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-rt-1"
+        - Key: Environment
+          Value: !Ref Environment
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-rt-2"
+        - Key: Environment
+          Value: !Ref Environment
+
+  PrivateSubnet1RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable1
+
+  PrivateSubnet2RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable2
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # VPC Endpoints — replace NAT gateway; ECS tasks reach AWS services privately
+  # ══════════════════════════════════════════════════════════════════════════
+
+  # Security group shared by all interface endpoints
+  VpcEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTPS from ECS tasks into VPC interface endpoints
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref ServiceSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vpce-sg"
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ECR — image pull
+  EcrApiEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.api"
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  EcrDkrEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.dkr"
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  # CloudWatch Logs — container log shipping
+  CloudWatchLogsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.logs"
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  # Bedrock Runtime — LLM inference (Amazon Nova)
+  BedrockRuntimeEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.bedrock-runtime"
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  # Athena — SQL query execution
+  AthenaEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.athena"
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  # Glue — schema catalog
+  GlueEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.glue"
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  # Secrets Manager — optional credential injection
+  SecretsManagerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.secretsmanager"
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  # S3 Gateway endpoint — free, no security group, attaches to route tables
+  # Covers ECR layer pulls (stored in S3) and Athena result writes
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PrivateRouteTable1
+        - !Ref PrivateRouteTable2
+        - !Ref PublicRouteTable
+
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # S3 Buckets
+  # ══════════════════════════════════════════════════════════════════════════
 
   ProjectDataBucketNorth:
     Type: AWS::S3::Bucket
     Condition: CreatePrimaryDataBucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    DependsOn: CrawlerTriggerLambdaPermission
     Properties:
       BucketName: !Ref PrimaryDataBucketName
       VersioningConfiguration:
@@ -147,35 +454,17 @@ Resources:
             Status: Enabled
             Prefix: athenaresults/
             ExpirationInDays: 30
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt CrawlerTriggerLambda.Arn
       Tags:
         - Key: Environment
           Value: !Ref Environment
 
-  ProjectDataBucketCentral:
-    Type: AWS::S3::Bucket
-    Condition: CreateCentralDataBucket
-    Properties:
-      BucketName: !Ref CentralDataBucketName
-      VersioningConfiguration:
-        Status: Enabled
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-      LifecycleConfiguration:
-        Rules:
-          - Id: ExpireAthenaResults
-            Status: Enabled
-            Prefix: athenaresults/
-            ExpirationInDays: 30
-      Tags:
-        - Key: Environment
-          Value: !Ref Environment
+  # ══════════════════════════════════════════════════════════════════════════
+  # Glue Databases & Crawlers
+  # ══════════════════════════════════════════════════════════════════════════
 
   LibraryGlueDatabase:
     Type: AWS::Glue::Database
@@ -219,8 +508,6 @@ Resources:
                 Resource:
                   - !Sub "arn:${AWS::Partition}:s3:::${PrimaryDataBucketName}"
                   - !Sub "arn:${AWS::Partition}:s3:::${PrimaryDataBucketName}/*"
-                  - !Sub "arn:${AWS::Partition}:s3:::${CentralDataBucketName}"
-                  - !Sub "arn:${AWS::Partition}:s3:::${CentralDataBucketName}/*"
       Tags:
         - Key: Environment
           Value: !Ref Environment
@@ -261,6 +548,11 @@ Resources:
       Tags:
         Environment: !Ref Environment
 
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Athena Workgroup
+  # ══════════════════════════════════════════════════════════════════════════
+
   ProjectAthenaWorkgroup:
     Type: AWS::Athena::WorkGroup
     Condition: CreateAthenaWorkgroup
@@ -276,6 +568,10 @@ Resources:
           Enabled: false
         ResultConfiguration:
           OutputLocation: !Sub "s3://${PrimaryDataBucketName}/athenaresults/"
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # ECR Repository
+  # ══════════════════════════════════════════════════════════════════════════
 
   AppEcrRepository:
     Type: AWS::ECR::Repository
@@ -302,11 +598,22 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # ══════════════════════════════════════════════════════════════════════════
+  # CloudWatch Log Group
+  # ══════════════════════════════════════════════════════════════════════════
+
   AppLogGroup:
     Type: AWS::Logs::LogGroup
+    Condition: CreateAppLogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       LogGroupName: /ecs/data-architecture-ai
       RetentionInDays: 30
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # ECS Cluster
+  # ══════════════════════════════════════════════════════════════════════════
 
   EcsCluster:
     Type: AWS::ECS::Cluster
@@ -318,6 +625,10 @@ Resources:
       Tags:
         - Key: Environment
           Value: !Ref Environment
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # IAM Roles
+  # ══════════════════════════════════════════════════════════════════════════
 
   EcsTaskExecutionRole:
     Type: AWS::IAM::Role
@@ -396,8 +707,6 @@ Resources:
                 Resource:
                   - !Sub "arn:${AWS::Partition}:s3:::${PrimaryDataBucketName}"
                   - !Sub "arn:${AWS::Partition}:s3:::${PrimaryDataBucketName}/*"
-                  - !Sub "arn:${AWS::Partition}:s3:::${CentralDataBucketName}"
-                  - !Sub "arn:${AWS::Partition}:s3:::${CentralDataBucketName}/*"
               - Effect: Allow
                 Action:
                   - s3:GetObject
@@ -407,21 +716,33 @@ Resources:
                 Resource:
                   - !Sub "arn:${AWS::Partition}:s3:::${PrimaryDataBucketName}"
                   - !Sub "arn:${AWS::Partition}:s3:::${PrimaryDataBucketName}/athenaresults/*"
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:*"
       Tags:
         - Key: Environment
           Value: !Ref Environment
+
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Security Groups
+  # ══════════════════════════════════════════════════════════════════════════
 
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: ALB ingress for Text-to-SQL API
-      VpcId: !Ref VpcId
+      VpcId: !Ref Vpc
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           CidrIp: !Ref AlbIngressCidr
       Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-alb-sg"
         - Key: Environment
           Value: !Ref Environment
 
@@ -429,15 +750,21 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: ECS tasks for Text-to-SQL API
-      VpcId: !Ref VpcId
+      VpcId: !Ref Vpc
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 8080
           ToPort: 8080
           SourceSecurityGroupId: !Ref AlbSecurityGroup
       Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-ecs-sg"
         - Key: Environment
           Value: !Ref Environment
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # Application Load Balancer — public subnets only
+  # ══════════════════════════════════════════════════════════════════════════
 
   ApplicationLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
@@ -445,9 +772,14 @@ Resources:
       Name: data-arch-ai-alb
       Scheme: internet-facing
       Type: application
-      Subnets: !Ref PublicSubnetIds
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
       SecurityGroups:
         - !Ref AlbSecurityGroup
+      LoadBalancerAttributes:
+        - Key: routing.http.drop_invalid_header_fields.enabled
+          Value: "true"
       Tags:
         - Key: Environment
           Value: !Ref Environment
@@ -458,7 +790,7 @@ Resources:
       Name: data-arch-ai-tg
       Port: 8080
       Protocol: HTTP
-      VpcId: !Ref VpcId
+      VpcId: !Ref Vpc
       TargetType: ip
       HealthCheckPath: /health
       HealthCheckIntervalSeconds: 30
@@ -479,6 +811,10 @@ Resources:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref TargetGroup
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # ECS Task Definition & Service — private subnets, no public IP
+  # ══════════════════════════════════════════════════════════════════════════
 
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
@@ -512,8 +848,6 @@ Resources:
               Value: !Ref AWS::Region
             - Name: ATHENA_WORKGROUP
               Value: !Ref AthenaWorkgroupName
-            - Name: ATHENA_USE_MANAGED_RESULTS
-              Value: "true"
             - Name: BEDROCK_MODEL
               Value: eu.amazon.nova-micro-v1:0
             - Name: LOG_LEVEL
@@ -528,7 +862,7 @@ Resources:
           LogConfiguration:
             LogDriver: awslogs
             Options:
-              awslogs-group: !Ref AppLogGroup
+              awslogs-group: !If [CreateAppLogGroup, !Ref AppLogGroup, "/ecs/data-architecture-ai"]
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: api
           HealthCheck:
@@ -552,8 +886,11 @@ Resources:
       HealthCheckGracePeriodSeconds: 120
       NetworkConfiguration:
         AwsvpcConfiguration:
-          AssignPublicIp: ENABLED
-          Subnets: !Ref PublicSubnetIds
+          # Private subnets — no public IP; AWS services reached via VPC endpoints
+          AssignPublicIp: DISABLED
+          Subnets:
+            - !Ref PrivateSubnet1
+            - !Ref PrivateSubnet2
           SecurityGroups:
             - !Ref ServiceSecurityGroup
       LoadBalancers:
@@ -564,15 +901,180 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # ══════════════════════════════════════════════════════════════════════════
+  # Lambda — S3 trigger that auto-creates Glue DBs/Crawlers for new prefixes
+  # ══════════════════════════════════════════════════════════════════════════
+
+  CrawlerTriggerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: GlueCrawlerManagement
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - glue:GetCrawler
+                  - glue:CreateCrawler
+                  - glue:StartCrawler
+                  - glue:GetDatabase
+                  - glue:CreateDatabase
+                  - glue:TagResource
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !GetAtt LibraryCrawlerRole.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:s3:::${PrimaryDataBucketName}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${PrimaryDataBucketName}/*"
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  CrawlerTriggerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-s3-crawler-trigger"
+      Runtime: python3.11
+      Handler: handler.handler
+      Timeout: 60
+      MemorySize: 128
+      Role: !GetAtt CrawlerTriggerLambdaRole.Arn
+      Environment:
+        Variables:
+          CRAWLER_ROLE_ARN: !GetAtt LibraryCrawlerRole.Arn
+          ACCOUNT_ID: !Ref AWS::AccountId
+          LOG_LEVEL: INFO
+      Code:
+        ZipFile: |
+          """Lambda: auto-trigger or auto-create Glue Crawlers when data lands in S3."""
+          import json, logging, os, re, urllib.parse
+          import boto3
+          from botocore.exceptions import ClientError
+
+          logger = logging.getLogger()
+          logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+          glue = boto3.client("glue")
+          CRAWLER_ROLE_ARN = os.environ["CRAWLER_ROLE_ARN"]
+
+          def _sanitize(prefix):
+              name = prefix.strip("/").lower()
+              return re.sub(r"[^a-z0-9]+", "_", name).strip("_")
+
+          def _db_name(prefix):
+              return f"project_{_sanitize(prefix)}_db"
+
+          def _crawler_name(prefix):
+              return f"project-{_sanitize(prefix).replace('_', '-')}-crawler"
+
+          def _exists(fn, **kw):
+              try:
+                  fn(**kw)
+                  return True
+              except ClientError as e:
+                  if e.response["Error"]["Code"] == "EntityNotFoundException":
+                      return False
+                  raise
+
+          def handler(event, context):
+              for record in event.get("Records", []):
+                  bucket = record["s3"]["bucket"]["name"]
+                  key = urllib.parse.unquote_plus(record["s3"]["object"]["key"])
+                  parts = key.split("/")
+                  if len(parts) < 2:
+                      continue
+                  prefix = parts[0]
+                  s3_path = f"s3://{bucket}/{prefix}/"
+                  cname = _crawler_name(prefix)
+                  dbname = _db_name(prefix)
+                  logger.info("prefix=%s crawler=%s db=%s", prefix, cname, dbname)
+                  if not _exists(glue.get_database, Name=dbname):
+                      glue.create_database(DatabaseInput={"Name": dbname, "Description": f"Auto-created for {s3_path}"})
+                  if not _exists(glue.get_crawler, Name=cname):
+                      glue.create_crawler(Name=cname, Role=CRAWLER_ROLE_ARN, DatabaseName=dbname,
+                          Targets={"S3Targets": [{"Path": s3_path}]},
+                          SchemaChangePolicy={"UpdateBehavior": "UPDATE_IN_DATABASE", "DeleteBehavior": "LOG"},
+                          Tags={"ManagedBy": "s3-trigger-lambda"})
+                  try:
+                      glue.start_crawler(Name=cname)
+                  except ClientError as e:
+                      if e.response["Error"]["Code"] != "CrawlerRunningException":
+                          raise
+                      logger.info("Crawler %s already running", cname)
+              return {"statusCode": 200}
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Permission for S3 to invoke the Lambda
+  CrawlerTriggerLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CrawlerTriggerLambda
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:s3:::${PrimaryDataBucketName}"
+      SourceAccount: !Ref AWS::AccountId
+
+  # S3 bucket notification — fires Lambda on any object creation
+  # NOTE: This only works if the bucket is created by this stack (CreatePrimaryDataBucket=true).
+  # For pre-existing buckets, configure the notification manually via scripts/configure_s3_notification.sh.
+
 
 Outputs:
+
+  VpcId:
+    Description: VPC created and managed by this stack
+    Value: !Ref Vpc
+    Export:
+      Name: !Sub "${AWS::StackName}-VpcId"
+
+  PublicSubnetIds:
+    Description: Public subnets (ALB)
+    Value: !Sub "${PublicSubnet1},${PublicSubnet2}"
+
+  PrivateSubnetIds:
+    Description: Private subnets (ECS tasks)
+    Value: !Sub "${PrivateSubnet1},${PrivateSubnet2}"
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnetIds"
+
+  PrivateSubnet1Id:
+    Description: Private subnet 1
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnet1"
+
+  PrivateSubnet2Id:
+    Description: Private subnet 2
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub "${AWS::StackName}-PrivateSubnet2"
+
+  ServiceSecurityGroupId:
+    Description: ECS tasks security group (use as ingress source for databases)
+    Value: !Ref ServiceSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-ServiceSecurityGroup"
+
   ProjectfilesBucketName:
     Description: Primary S3 data bucket (eu-north-1)
     Value: !Ref PrimaryDataBucketName
-
-  ProjectfilesBucketCentralName:
-    Description: Secondary S3 data bucket (eu-central-1)
-    Value: !Ref CentralDataBucketName
 
   LibraryDatabaseName:
     Description: Glue database name for the library dataset
@@ -609,3 +1111,7 @@ Outputs:
   EcsServiceName:
     Description: ECS service name (force new deployment after image push)
     Value: !GetAtt EcsService.Name
+
+  CrawlerTriggerLambdaArn:
+    Description: Lambda that auto-triggers Glue Crawlers on S3 uploads
+    Value: !GetAtt CrawlerTriggerLambda.Arn

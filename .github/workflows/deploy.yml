@@ -1,0 +1,98 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      desired_count:
+        description: "ECS desired task count"
+        required: false
+        default: "1"
+
+env:
+  AWS_REGION: eu-north-1
+  ECR_REPOSITORY: data-architecture-ai
+  ECS_CLUSTER: data-architecture-ai
+  ECS_SERVICE: data-architecture-ai
+  STACK_NAME: cgs-ai-analyst-agent-project
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ── Gate: run tests first ──────────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: python -m compileall src scripts run_smoke.py
+      - run: python -m unittest discover -s tests -p "test_*.py" -v
+        env:
+          PYTHONPATH: src
+      - run: python run_smoke.py
+
+  # ── Build + Push + Deploy ──────────────────────────────────────────────────
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        id: build
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build --platform linux/amd64 \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Force ECS redeployment
+        env:
+          DESIRED_COUNT: ${{ github.event.inputs.desired_count || '1' }}
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --force-new-deployment \
+            --desired-count $DESIRED_COUNT \
+            --region $AWS_REGION
+
+      - name: Wait for service stability
+        run: |
+          echo "Waiting for ECS service to stabilize..."
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --region $AWS_REGION || echo "Timeout waiting for stability (service may still be deploying)"
+
+      - name: Print API URL
+        run: |
+          ALB_URL=$(aws cloudformation describe-stacks \
+            --stack-name $STACK_NAME \
+            --region $AWS_REGION \
+            --query "Stacks[0].Outputs[?OutputKey=='LoadBalancerUrl'].OutputValue" \
+            --output text)
+          echo "🚀 API deployed: $ALB_URL"
+          echo "Health check: $ALB_URL/health"

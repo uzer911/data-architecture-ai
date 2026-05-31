@@ -1,0 +1,11 @@
+# Databricks SQL Warehouse connection
+# Copy to databricks.yaml and fill in your values
+name: Databricks SQL
+type: databricks
+enabled: false
+settings:
+  host: adb-123456.azuredatabricks.net
+  http_path: /sql/1.0/warehouses/abc123
+  catalog: main
+  schema: default
+  token_from_secret: databricks/token  # AWS Secrets Manager secret name

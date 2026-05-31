@@ -1,47 +1,61 @@
 # Project Structure
 
 ```
-DataArchitectureWithAi/
-├── mda_text_to_sql_langchain_bedrock.ipynb  # Main notebook: Text-to-SQL demo with LangChain + Bedrock
-├── run_smoke.py                              # Local smoke test (no AWS calls, uses SQLite)
-├── requirements.txt                          # Python dependencies
-├── setup.sh                                  # Virtualenv setup + optional S3 upload
-├── deploy-changeset.sh                       # CloudFormation change set deployment script
-├── cloudformation-template-validated.yml     # IaC template (IAM, Lambda, EventBridge)
-│
-├── s3_cars_data.csv                          # Raw cars dataset
-├── s3_library_data.json                      # Raw library dataset (NDJSON format)
-│
-├── schema/
-│   ├── cars_schema.json                      # JSON Schema (draft-07) for cars data
-│   └── library_schema.json                   # JSON Schema (draft-07) for library data
-│
-└── scripts/
-    └── normalize_cars.py                     # Standalone CSV normalization script
+.
+├── src/llm_sql/              # Main application package
+│   ├── __init__.py           # Exports LLMSQLService, parse_catalog
+│   ├── api.py                # FastAPI HTTP API (/health, /query)
+│   ├── config.py             # Pydantic settings (env vars, validation)
+│   ├── core.py               # LLMSQLService — LangChain text-to-SQL logic
+│   ├── runner.py             # Service builder (wires Athena connector + LLM)
+│   ├── secrets.py            # Secrets Manager integration
+│   └── connectors/           # Multi-connector framework
+│       ├── base.py           # BaseConnector ABC (dialect, get_schema, execute_sql)
+│       ├── registry.py       # Auto-discovers connectors from YAML configs
+│       ├── athena.py         # AWS Athena connector
+│       ├── redshift.py       # AWS Redshift connector
+│       ├── rds.py            # RDS PostgreSQL + MySQL connectors
+│       ├── snowflake.py      # Snowflake connector
+│       └── databricks.py     # Databricks connector
+├── scripts/                  # CLI tools and entrypoints
+│   ├── serve.py              # ECS Fargate entrypoint (uvicorn)
+│   ├── streamlit_app.py      # Streamlit chat UI
+│   ├── run_query.py          # CLI query tool (supports --json-output)
+│   ├── setup.sh              # Dependency installation helper
+│   ├── push_ecr.sh           # Build + push Docker image to ECR
+│   ├── deploy-rds.sh         # Deploy Aurora Serverless v2 stack
+│   └── normalize_cars.py     # Data normalization script
+├── tests/                    # Unit tests (unittest framework)
+│   ├── test_config.py
+│   ├── test_core.py
+│   ├── test_runner.py
+│   └── test_serve.py
+├── config/connections/       # Data source YAML configs (one per source)
+├── schema/                   # JSON Schema definitions for datasets
+├── data/                     # Sample data files (CSV, JSON)
+├── lambda/                   # AWS Lambda handlers
+│   └── s3_trigger_crawler/   # S3 event → Glue Crawler trigger
+├── POC/                      # Proof-of-concept notebooks
+├── assets/                   # Static assets (logos)
+├── .github/workflows/        # CI/CD pipelines
+├── Makefile                  # Task runner
+├── Dockerfile                # Container build (Python 3.11-slim)
+├── requirements.txt          # Pinned Python dependencies
+├── cloudformation-*.yml      # IaC templates
+└── deploy-changeset.sh       # CloudFormation deployment script
 ```
+
+## Architecture Patterns
+
+- **Connector pattern**: All data sources implement `BaseConnector` ABC. New connectors go in `src/llm_sql/connectors/` and register in `registry.py`.
+- **YAML-driven config**: Each data source has a YAML file in `config/connections/`. The registry auto-discovers enabled connections.
+- **Pydantic settings**: All runtime config flows through `src/llm_sql/config.py` using `BaseSettings` with env var binding.
+- **Lazy service init**: The API lazily initializes the query service so `/health` responds fast for ALB probes.
+- **PYTHONPATH convention**: Always set `PYTHONPATH=src` when running code outside Docker (tests, scripts, CLI).
 
 ## Conventions
 
-### Data Files
-- Raw data files are prefixed with `s3_` to indicate they are intended for S3 storage
-- Normalized outputs drop the `s3_` prefix and add `_normalized` (e.g., `s3_cars_data_normalized.csv`)
-- Library data uses NDJSON (newline-delimited JSON); load with `pd.read_json(..., lines=True)`
-
-### Schemas
-- All dataset schemas live in `schema/` as JSON Schema draft-07 files
-- Schema filenames match their dataset: `cars_schema.json` ↔ `s3_cars_data.csv`
-- Required fields are declared explicitly in the `required` array
-
-### Scripts
-- Standalone utility scripts go in `scripts/`
-- Scripts should be runnable directly (`if __name__ == '__main__'`) and operate on paths relative to the project root
-
-### Infrastructure
-- All CloudFormation changes must go through a change set — never apply directly
-- Always validate the template before creating a change set
-- Tag every deployment with `DeployedBy`, `DeploymentDate`, and `Environment`
-
-### Testing
-- `run_smoke.py` is the local test entry point — keep it free of AWS/Bedrock dependencies
-- Smoke tests use in-memory SQLite to mirror the Athena query patterns
-- Run smoke tests before any deployment to verify data loading and normalization
+- New connectors: subclass `BaseConnector`, implement `dialect`, `get_schema()`, `execute_sql()`, add to registry.
+- Tests: place in `tests/test_<module>.py`, use `unittest.TestCase`.
+- Scripts: standalone CLI tools go in `scripts/`, use `if __name__ == '__main__'` guard.
+- Config templates: for each `config/connections/<name>.yaml`, keep a `.yaml.template` with placeholder values.

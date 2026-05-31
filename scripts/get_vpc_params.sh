@@ -1,35 +1,42 @@
 #!/usr/bin/env bash
-# Print default VPC ID and comma-separated public subnet IDs for CloudFormation parameters.
+# Read VPC outputs from the deployed CloudFormation stack.
+# The VPC is now created by the stack itself — there is no default-VPC dependency.
+# This script is used by deploy-changeset.sh only to display post-deploy info.
 set -euo pipefail
 
 REGION="${AWS_REGION:-eu-north-1}"
+STACK_NAME="${STACK_NAME:-cgs-ai-analyst-agent-project}"
 
-VPC_ID="$(aws ec2 describe-vpcs \
+STACK_STATUS="$(aws cloudformation describe-stacks \
+  --stack-name "$STACK_NAME" \
   --region "$REGION" \
-  --filters Name=isDefault,Values=true \
-  --query 'Vpcs[0].VpcId' \
-  --output text)"
+  --query 'Stacks[0].StackStatus' \
+  --output text 2>/dev/null || echo 'NOT_FOUND')"
 
-if [[ -z "$VPC_ID" || "$VPC_ID" == "None" ]]; then
-  echo "No default VPC found in $REGION. Create a VPC or pass VpcId/PublicSubnetIds manually." >&2
-  exit 1
+if [[ "$STACK_STATUS" == "NOT_FOUND" || "$STACK_STATUS" == "DELETE_COMPLETE" ]]; then
+  echo "Stack '$STACK_NAME' not yet deployed — VPC will be created on first deploy." >&2
+  echo "VPC_ID="
+  echo "PUBLIC_SUBNET_IDS="
+  echo "PRIVATE_SUBNET_IDS="
+  exit 0
 fi
 
-SUBNETS="$(aws ec2 describe-subnets \
-  --region "$REGION" \
-  --filters "Name=vpc-id,Values=$VPC_ID" "Name=map-public-ip-on-launch,Values=true" \
-  --query 'Subnets[*].SubnetId' \
-  --output text | tr '\t' ',')"
+get_output() {
+  aws cloudformation describe-stacks \
+    --stack-name "$STACK_NAME" \
+    --region "$REGION" \
+    --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" \
+    --output text 2>/dev/null || echo ""
+}
 
-if [[ -z "$SUBNETS" ]]; then
-  echo "No public subnets found in default VPC $VPC_ID." >&2
-  exit 1
-fi
+VPC_ID="$(get_output VpcId)"
+PUBLIC_SUBNET_IDS="$(get_output PublicSubnetIds)"
+PRIVATE_SUBNET_IDS="$(get_output PrivateSubnetIds)"
 
-echo "VPC_ID=$VPC_ID"
-echo "PUBLIC_SUBNET_IDS=$SUBNETS"
+echo "VPC_ID=${VPC_ID}"
+echo "PUBLIC_SUBNET_IDS=${PUBLIC_SUBNET_IDS}"
+echo "PRIVATE_SUBNET_IDS=${PRIVATE_SUBNET_IDS}"
 echo ""
-echo "Example deploy parameters (JSON — required for comma-separated subnet lists):"
-cat <<EOF
-  --parameters '[{"ParameterKey":"VpcId","ParameterValue":"$VPC_ID"},{"ParameterKey":"PublicSubnetIds","ParameterValue":"$SUBNETS"}]'
-EOF
+echo "Stack-managed VPC: ${VPC_ID}"
+echo "  Public subnets  (ALB):       ${PUBLIC_SUBNET_IDS}"
+echo "  Private subnets (ECS tasks): ${PRIVATE_SUBNET_IDS}"
