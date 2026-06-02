@@ -60,16 +60,15 @@ make deploy      # Review mode — shows change set summary
 make deploy-all  # Full auto — deploys everything
 ```
 
-**S3 Buckets created:**
-- `langchain-<account-id>-eu-north-1` — primary data bucket
-- `langchain-<account-id>-eu-central-1` — secondary data bucket
+**S3 Bucket created:**
+- `langchain-471613014056-eu-north-1` — primary data bucket (auto-created by the stack)
 
 ### Option 2: Manual AWS CLI commands
 
 #### 1. Set environment variables
 ```bash
 export AWS_REGION="eu-north-1"
-export STACK_NAME="cgs-ai-analyst-agent-project"
+export STACK_NAME="ai-analyst-agent-project"
 ```
 
 #### 2. Validate template
@@ -92,9 +91,7 @@ CFN_PARAMETERS=$(cat <<EOF
 [
   {"ParameterKey": "DesiredCount",            "ParameterValue": "0"},
   {"ParameterKey": "PrimaryDataBucketName",   "ParameterValue": "${PRIMARY_DATA_BUCKET_NAME}"},
-  {"ParameterKey": "CentralDataBucketName",   "ParameterValue": "${CENTRAL_DATA_BUCKET_NAME}"},
-  {"ParameterKey": "CreatePrimaryDataBucket", "ParameterValue": "${CREATE_PRIMARY_DATA_BUCKET}"},
-  {"ParameterKey": "CreateCentralDataBucket", "ParameterValue": "${CREATE_CENTRAL_DATA_BUCKET}"}
+  {"ParameterKey": "CreatePrimaryDataBucket", "ParameterValue": "${CREATE_PRIMARY_DATA_BUCKET}"}
 ]
 EOF
 )
@@ -225,11 +222,11 @@ Delete the failed stack, then redeploy:
 
 ```bash
 aws cloudformation delete-stack \
-  --stack-name cgs-ai-analyst-agent-project \
+  --stack-name ai-analyst-agent-project \
   --region eu-north-1
 
 aws cloudformation wait stack-delete-complete \
-  --stack-name cgs-ai-analyst-agent-project \
+  --stack-name ai-analyst-agent-project \
   --region eu-north-1
 
 ./deploy-changeset.sh
@@ -301,7 +298,7 @@ aws ecs update-service \
   --region eu-north-1
 ```
 
-Or attach the missing actions to role `cgs-ai-analyst-agent-project-EcsTaskRole-*` in IAM Console:
+Or attach the missing actions to role `ai-analyst-agent-project-EcsTaskRole-*` in IAM Console:
 `athena:ListTableMetadata`, `athena:GetTableMetadata`, `athena:ListDatabases`, `athena:GetDatabase`, `athena:GetDataCatalog` on `arn:aws:athena:REGION:ACCOUNT:datacatalog/*` and `database/*`.
 
 ### Change set shows no changes
@@ -324,7 +321,7 @@ Browser interface for asking questions (local AWS or remote ECS API).
 
 ```bash
 export GLUE_DB_NAME=project_library_db
-export PROJECT_FILES_BUCKET=langchain-015337708931-eu-north-1
+export PROJECT_FILES_BUCKET=langchain-471613014056-eu-north-1
 export ATHENA_WORKGROUP=project-text-to-sql
 export ATHENA_USE_MANAGED_RESULTS=true
 pip install -r requirements.txt
@@ -390,7 +387,7 @@ DESIRED_COUNT=1 ./scripts/push_ecr.sh
 
 ```bash
 aws cloudformation describe-stacks \
-  --stack-name cgs-ai-analyst-agent-project \
+  --stack-name ai-analyst-agent-project \
   --region eu-north-1 \
   --query "Stacks[0].Outputs[?OutputKey=='LoadBalancerUrl'].OutputValue" \
   --output text
@@ -442,7 +439,7 @@ curl -X POST "${ALB_URL}/query" \
 
 ```bash
 export GLUE_DB_NAME=project_library_db
-export PROJECT_FILES_BUCKET=langchain-<account-id>-eu-north-1
+export PROJECT_FILES_BUCKET=langchain-471613014056-eu-north-1
 export ATHENA_WORKGROUP=project-text-to-sql
 export ATHENA_USE_MANAGED_RESULTS=true
 PYTHONPATH=src python scripts/serve.py
@@ -456,7 +453,7 @@ The default Docker entrypoint runs the HTTP API. For one-off CLI queries:
 ```bash
 docker run --rm \
   -e GLUE_DB_NAME=project_library_db \
-  -e PROJECT_FILES_BUCKET=langchain-<account-id>-eu-north-1 \
+  -e PROJECT_FILES_BUCKET=langchain-471613014056-eu-north-1 \
   --entrypoint python \
   data-architecture-ai /app/scripts/run_query.py --question "How many books?"
 ```
@@ -587,7 +584,7 @@ settings:
   host: <cluster-endpoint-printed-by-script>
   port: 3306
   database: analyst_db
-  user_from_secret: cgs-ai-rds-aurora/aurora-credentials
+  user_from_secret: ai-rds-aurora/aurora-credentials
   region: eu-north-1
 ```
 
@@ -605,14 +602,14 @@ Override defaults with environment variables if needed:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RDS_SECRET` | `cgs-ai-rds-aurora/aurora-credentials` | Secrets Manager secret name |
+| `RDS_SECRET` | `ai-rds-aurora/aurora-credentials` | Secrets Manager secret name |
 | `RDS_DATABASE` | `analyst_db` | Target database |
 | `AWS_REGION` | `eu-north-1` | Region for Secrets Manager calls |
 
 ### Architecture
 
 - **Template:** `cloudformation-rds-aurora.yml`
-- **Stack name:** `cgs-ai-rds-aurora`
+- **Stack name:** `ai-rds-aurora`
 - **Engine:** Aurora MySQL 8.0 (Serverless v2)
 - **Scaling:** 0.5–4 ACU (configurable via parameters)
 - **Network:** Same VPC + private subnets as the main stack
@@ -624,7 +621,7 @@ Override defaults with environment variables if needed:
 
 ```bash
 aws cloudformation delete-stack \
-  --stack-name cgs-ai-rds-aurora \
+  --stack-name ai-rds-aurora \
   --region eu-north-1
 ```
 

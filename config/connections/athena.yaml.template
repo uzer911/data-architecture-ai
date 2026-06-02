@@ -6,6 +6,6 @@ enabled: true
 settings:
   glue_db_name: project_library_db
   glue_db_names: "project_library_db,project_cars_db"  # comma-separated for multiple DBs
-  s3_bucket: langchain-YOUR_ACCOUNT_ID-eu-north-1
+  s3_bucket: langchain-471613014056-eu-north-1
   workgroup: project-text-to-sql
   region: eu-north-1

@@ -18,7 +18,7 @@ import boto3
 import pymysql
 
 REGION = os.environ.get("AWS_REGION", "eu-north-1")
-SECRET_NAME = os.environ.get("RDS_SECRET", "cgs-ai-rds-aurora/aurora-credentials")
+SECRET_NAME = os.environ.get("RDS_SECRET", "ai-rds-aurora/aurora-credentials")
 DATABASE = os.environ.get("RDS_DATABASE", "analyst_db")
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")

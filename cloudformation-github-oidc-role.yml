@@ -1,0 +1,298 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  GitHub Actions OIDC IAM role for deploying the ai-analyst-agent-project stack.
+  Creates an OIDC provider (if not already present) and a deploy role that GitHub
+  Actions can assume via short-lived tokens — no long-lived access keys needed.
+
+Parameters:
+
+  GitHubOrg:
+    Type: String
+    Description: Your GitHub username or organisation name (e.g. myusername)
+
+  GitHubRepo:
+    Type: String
+    Description: Repository name (e.g. Ai_Agent)
+
+  OidcProviderArn:
+    Type: String
+    Default: ""
+    Description: >
+      ARN of an existing GitHub OIDC provider in this account.
+      Leave empty to create a new one. If you already have one, paste its ARN here
+      (check IAM → Identity providers → token.actions.githubusercontent.com).
+
+Conditions:
+  CreateOidcProvider: !Equals [!Ref OidcProviderArn, ""]
+
+Resources:
+
+  # ── GitHub OIDC Provider (skip if one already exists) ─────────────────────
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  # ── Deploy Role ────────────────────────────────────────────────────────────
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: github-actions-ai-agent-deploy
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Ref OidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                # Allows any branch/tag/PR in your repo to assume this role.
+                # Tighten to ":ref:refs/heads/main" for main-branch-only deploys.
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${GitHubRepo}:*"
+      Policies:
+        - PolicyName: AiAgentDeployPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # CloudFormation — full stack management
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:UpdateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:GetTemplate
+                  - cloudformation:ListStackResources
+                  - cloudformation:ListChangeSets
+                Resource:
+                  - !Sub "arn:aws:cloudformation:eu-north-1:471613014056:stack/ai-analyst-agent-project/*"
+                  - !Sub "arn:aws:cloudformation:eu-north-1:471613014056:stack/ai-rds-aurora/*"
+
+              # ECR — push images
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                  - ecr:DescribeRepositories
+                  - ecr:CreateRepository
+                Resource:
+                  - !Sub "arn:aws:ecr:eu-north-1:471613014056:repository/data-architecture-ai"
+
+              # ECS — force redeployment
+              - Effect: Allow
+                Action:
+                  - ecs:UpdateService
+                  - ecs:DescribeServices
+                  - ecs:DescribeClusters
+                  - ecs:RegisterTaskDefinition
+                  - ecs:DeregisterTaskDefinition
+                  - ecs:DescribeTaskDefinition
+                  - ecs:ListTaskDefinitions
+                Resource: "*"
+
+              # IAM — CloudFormation needs to create/update roles
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRole
+                  - iam:GetRolePolicy
+                  - iam:PassRole
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                  - iam:CreateOIDCProvider
+                  - iam:GetOIDCProvider
+                Resource: "*"
+
+              # S3 — bucket creation and data access
+              - Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:DeleteBucket
+                  - s3:PutBucketVersioning
+                  - s3:PutBucketEncryption
+                  - s3:PutBucketPublicAccessBlock
+                  - s3:PutBucketNotification
+                  - s3:PutBucketNotificationConfiguration
+                  - s3:PutLifecycleConfiguration
+                  - s3:GetBucketNotification
+                  - s3:GetBucketNotificationConfiguration
+                  - s3:GetBucketLocation
+                  - s3:HeadBucket
+                  - s3:ListBucket
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - "arn:aws:s3:::langchain-471613014056-eu-north-1"
+                  - "arn:aws:s3:::langchain-471613014056-eu-north-1/*"
+
+              # Glue — crawler and database management
+              - Effect: Allow
+                Action:
+                  - glue:GetCrawler
+                  - glue:StartCrawler
+                  - glue:CreateCrawler
+                  - glue:DeleteCrawler
+                  - glue:GetDatabase
+                  - glue:CreateDatabase
+                  - glue:DeleteDatabase
+                  - glue:GetTable
+                  - glue:GetTables
+                  - glue:CreateTable
+                  - glue:DeleteTable
+                  - glue:TagResource
+                Resource: "*"
+
+              # Athena — workgroup management
+              - Effect: Allow
+                Action:
+                  - athena:CreateWorkGroup
+                  - athena:DeleteWorkGroup
+                  - athena:GetWorkGroup
+                  - athena:UpdateWorkGroup
+                  - athena:TagResource
+                Resource:
+                  - !Sub "arn:aws:athena:eu-north-1:471613014056:workgroup/project-text-to-sql"
+
+              # Lambda — crawler trigger function
+              - Effect: Allow
+                Action:
+                  - lambda:CreateFunction
+                  - lambda:DeleteFunction
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateFunctionConfiguration
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                  - lambda:TagResource
+                  - lambda:ListTags
+                Resource:
+                  - !Sub "arn:aws:lambda:eu-north-1:471613014056:function:ai-analyst-agent-project-s3-crawler-trigger"
+
+              # CloudWatch Logs — log group management
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:PutRetentionPolicy
+                  - logs:DescribeLogGroups
+                  - logs:TagLogGroup
+                  - logs:TagResource
+                Resource:
+                  - !Sub "arn:aws:logs:eu-north-1:471613014056:log-group:/ecs/data-architecture-ai:*"
+
+              # EC2 — VPC, subnets, security groups, VPC endpoints
+              - Effect: Allow
+                Action:
+                  - ec2:CreateVpc
+                  - ec2:DeleteVpc
+                  - ec2:ModifyVpcAttribute
+                  - ec2:DescribeVpcs
+                  - ec2:CreateSubnet
+                  - ec2:DeleteSubnet
+                  - ec2:DescribeSubnets
+                  - ec2:CreateRouteTable
+                  - ec2:DeleteRouteTable
+                  - ec2:CreateRoute
+                  - ec2:DeleteRoute
+                  - ec2:AssociateRouteTable
+                  - ec2:DisassociateRouteTable
+                  - ec2:DescribeRouteTables
+                  - ec2:CreateInternetGateway
+                  - ec2:DeleteInternetGateway
+                  - ec2:AttachInternetGateway
+                  - ec2:DetachInternetGateway
+                  - ec2:DescribeInternetGateways
+                  - ec2:CreateSecurityGroup
+                  - ec2:DeleteSecurityGroup
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:DescribeSecurityGroups
+                  - ec2:CreateVpcEndpoint
+                  - ec2:DeleteVpcEndpoints
+                  - ec2:DescribeVpcEndpoints
+                  - ec2:ModifyVpcEndpoint
+                  - ec2:DescribeAvailabilityZones
+                  - ec2:DescribeAccountAttributes
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
+                Resource: "*"
+
+              # ELB — ALB, target groups, listeners
+              - Effect: Allow
+                Action:
+                  - elasticloadbalancing:CreateLoadBalancer
+                  - elasticloadbalancing:DeleteLoadBalancer
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - elasticloadbalancing:ModifyLoadBalancerAttributes
+                  - elasticloadbalancing:CreateTargetGroup
+                  - elasticloadbalancing:DeleteTargetGroup
+                  - elasticloadbalancing:DescribeTargetGroups
+                  - elasticloadbalancing:ModifyTargetGroup
+                  - elasticloadbalancing:CreateListener
+                  - elasticloadbalancing:DeleteListener
+                  - elasticloadbalancing:DescribeListeners
+                  - elasticloadbalancing:ModifyListener
+                  - elasticloadbalancing:AddTags
+                  - elasticloadbalancing:RemoveTags
+                  - elasticloadbalancing:DescribeTags
+                Resource: "*"
+
+              # Secrets Manager — read secrets for ECS tasks
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource:
+                  - !Sub "arn:aws:secretsmanager:eu-north-1:471613014056:secret:*"
+
+Outputs:
+
+  DeployRoleArn:
+    Description: >
+      Paste this ARN as the AWS_DEPLOY_ROLE_ARN secret in your GitHub repository
+      (Settings → Secrets and variables → Actions → New repository secret)
+    Value: !GetAtt GitHubDeployRole.Arn
+
+  DeployRoleName:
+    Description: IAM role name
+    Value: !Ref GitHubDeployRole

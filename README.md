@@ -44,7 +44,7 @@ Files
 
 S3 Buckets
 The CloudFormation template creates an S3 data bucket with a globally unique name:
-- `langchain-<account-id>-eu-north-1` — primary bucket (eu-north-1)
+- `langchain-471613014056-eu-north-1` — primary bucket (eu-north-1)
 
 The bucket has versioning, AES-256 encryption, public access blocked, and a 30-day
 lifecycle rule to expire Athena query results.
@@ -59,8 +59,8 @@ CloudFormation Stacks
 
 | Stack | Template | Purpose |
 |-------|----------|---------|
-| `cgs-ai-analyst-agent-project` | `cloudformation-template-validated.yml` | VPC, ECS, ALB, Lambda, Glue, S3, VPC endpoints |
-| `cgs-ai-rds-aurora` | `cloudformation-rds-aurora.yml` | Aurora Serverless v2 (MySQL), Secrets Manager credentials |
+| `ai-analyst-agent-project` | `cloudformation-template-validated.yml` | VPC, ECS, ALB, Lambda, Glue, S3, VPC endpoints |
+| `ai-rds-aurora` | `cloudformation-rds-aurora.yml` | Aurora Serverless v2 (MySQL), Secrets Manager credentials |
 
 CloudFormation Outputs (consumed by the notebook)
 | Output Key | Description |
@@ -135,13 +135,13 @@ Production-grade setup
 Notebook environment variable
 Set `CFN_STACK_NAME` before launching Jupyter to avoid editing the placeholder in cell 4:
 ```bash
-export CFN_STACK_NAME=cgs-ai-analyst-agent-project
+export CFN_STACK_NAME=ai-analyst-agent-project
 ```
 
 Streamlit UI
 ```bash
 export GLUE_DB_NAME=project_library_db
-export PROJECT_FILES_BUCKET=langchain-<account-id>-eu-north-1
+export PROJECT_FILES_BUCKET=langchain-471613014056-eu-north-1
 export ATHENA_WORKGROUP=project-text-to-sql
 export ATHENA_USE_MANAGED_RESULTS=true
 make ui

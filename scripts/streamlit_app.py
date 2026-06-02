@@ -9,7 +9,7 @@ Remote mode: set API_URL to your ECS load balancer.
 
 Example:
   export GLUE_DB_NAME=project_library_db
-  export PROJECT_FILES_BUCKET=langchain-<account-id>-eu-north-1
+  export PROJECT_FILES_BUCKET=langchain-471613014056-eu-north-1
   export ATHENA_WORKGROUP=project-text-to-sql
   streamlit run scripts/streamlit_app.py
 """
@@ -669,7 +669,7 @@ def _render_sidebar():
             new_bucket = st.text_input(
                 '🪣 S3 Bucket',
                 value=os.environ.get('PROJECT_FILES_BUCKET', st.session_state.get('cfg_bucket', '')),
-                placeholder='e.g. langchain-012345-eu-north-1',
+                placeholder='e.g. langchain-471613014056-eu-north-1',
                 key='cfg_bucket_input',
             )
             new_workgroup = st.text_input(

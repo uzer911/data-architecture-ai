@@ -7,8 +7,8 @@
 set -euo pipefail
 
 TEMPLATE_FILE="cloudformation-rds-aurora.yml"
-STACK_NAME="cgs-ai-rds-aurora"
-MAIN_STACK_NAME="${MAIN_STACK_NAME:-cgs-ai-analyst-agent-project}"
+STACK_NAME="ai-rds-aurora"
+MAIN_STACK_NAME="${MAIN_STACK_NAME:-ai-analyst-agent-project}"
 REGION="${AWS_REGION:-eu-north-1}"
 AUTO_MODE=false
 

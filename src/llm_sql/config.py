@@ -7,12 +7,11 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import BaseSettings, Field, validator
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings
 
 try:
-    # optional: allow .env for local development
     from dotenv import load_dotenv
-
     load_dotenv()
 except Exception:
     pass
@@ -47,7 +46,8 @@ class Settings(BaseSettings):
     api_port: int = Field(8080, env='PORT', ge=1024, le=65535)
     api_key: str | None = Field(None, env='API_KEY')
 
-    @validator('log_level')
+    @field_validator('log_level')
+    @classmethod
     def normalize_log_level(cls, value: str) -> str:
         normalized = value.upper()
         allowed = {'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'}
@@ -58,9 +58,11 @@ class Settings(BaseSettings):
             )
         return normalized
 
-    class Config:
-        env_file = '.env'
-        env_file_encoding = 'utf-8'
+    model_config = {
+        'env_file': '.env',
+        'env_file_encoding': 'utf-8',
+        'extra': 'ignore',
+    }
 
 
 def resolve_bedrock_model(model: str, region: str) -> str:

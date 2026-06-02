@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REGION="${AWS_REGION:-eu-north-1}"
-STACK_NAME="${STACK_NAME:-cgs-ai-analyst-agent-project}"
+STACK_NAME="${STACK_NAME:-ai-analyst-agent-project}"
 
 STACK_STATUS="$(aws cloudformation describe-stacks \
   --stack-name "$STACK_NAME" \

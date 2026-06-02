@@ -1,14 +1,14 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Aurora Serverless v2 (MySQL-compatible) — deployed in the VPC created by the
-  main cgs-ai-analyst-agent-project stack. Scales to zero when idle.
+  main ai-analyst-agent-project stack. Scales to zero when idle.
   Credentials are auto-generated and stored in AWS Secrets Manager.
 
 Parameters:
 
   MainStackName:
     Type: String
-    Default: cgs-ai-analyst-agent-project
+    Default: ai-analyst-agent-project
     Description: Name of the main stack (to import VPC/subnet exports)
 
   DatabaseName:

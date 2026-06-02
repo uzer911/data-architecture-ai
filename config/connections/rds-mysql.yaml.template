@@ -8,5 +8,5 @@ settings:
   host: YOUR_CLUSTER_ENDPOINT.eu-north-1.rds.amazonaws.com
   port: 3306
   database: analyst_db
-  user_from_secret: cgs-ai-rds-aurora/aurora-credentials  # AWS Secrets Manager secret name
+  user_from_secret: ai-rds-aurora/aurora-credentials  # AWS Secrets Manager secret name
   region: eu-north-1

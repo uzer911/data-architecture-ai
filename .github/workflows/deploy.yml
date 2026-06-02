@@ -15,7 +15,7 @@ env:
   ECR_REPOSITORY: data-architecture-ai
   ECS_CLUSTER: data-architecture-ai
   ECS_SERVICE: data-architecture-ai
-  STACK_NAME: cgs-ai-analyst-agent-project
+  STACK_NAME: ai-analyst-agent-project
 
 permissions:
   id-token: write
