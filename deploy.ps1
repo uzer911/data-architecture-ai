@@ -31,6 +31,7 @@ if (-not $bucketExists) {
 } else {
     Write-Host "Bucket exists: $BUCKET" -ForegroundColor Green
 }
+$CREATE_BUCKET = if ($bucketExists) { "false" } else { "true" }
 
 # ─── STEP 2: Upload templates ─────────────────────────────────────────────────
 Write-Host "`n[2/6] Uploading CloudFormation templates to S3..." -ForegroundColor Yellow
@@ -51,10 +52,11 @@ if (-not $mainExists) {
         --parameters `
             ParameterKey=DesiredCount,ParameterValue=0 `
             ParameterKey=PrimaryDataBucketName,ParameterValue=$BUCKET `
-            ParameterKey=CreatePrimaryDataBucket,ParameterValue=false `
+            ParameterKey=CreatePrimaryDataBucket,ParameterValue=$CREATE_BUCKET `
             ParameterKey=CreateLibraryGlueDatabase,ParameterValue=true `
             ParameterKey=CreateCarsGlueDatabase,ParameterValue=true `
             ParameterKey=CreateAthenaWorkgroup,ParameterValue=true `
+            ParameterKey=CreateAppLogGroup,ParameterValue=true `
         --tags Key=Environment,Value=production | Out-Null
     Write-Host "Stack creation started (~10 min)..." -ForegroundColor Yellow
     aws cloudformation wait stack-create-complete --stack-name $STACK_MAIN --region $REGION
@@ -82,11 +84,28 @@ if (-not $oidcExists) {
     Write-Host "OIDC stack already exists." -ForegroundColor Green
 }
 
-# ─── STEP 5: Upload sample data ───────────────────────────────────────────────
+# ─── STEP 5: Upload sample data and run crawlers ──────────────────────────────
 Write-Host "`n[5/6] Uploading sample data to S3..." -ForegroundColor Yellow
-aws s3 cp data/s3_library_data.json          "s3://$BUCKET/library-data/" --region $REGION
-aws s3 cp data/s3_cars_data_normalized.csv   "s3://$BUCKET/cars-data/"    --region $REGION
+aws s3 cp data/s3_library_data.json        "s3://$BUCKET/library-data/" --region $REGION
+aws s3 cp data/s3_cars_data_normalized.csv "s3://$BUCKET/cars-data/"    --region $REGION
 Write-Host "Sample data uploaded." -ForegroundColor Green
+
+Write-Host "Starting Glue crawlers..." -ForegroundColor Yellow
+aws glue start-crawler --name project-library-crawler --region $REGION 2>&1 | Out-Null
+aws glue start-crawler --name project-cars-crawler    --region $REGION 2>&1 | Out-Null
+
+Write-Host "Waiting for crawlers to finish (~2 min)..." -ForegroundColor Yellow
+do {
+    Start-Sleep -Seconds 15
+    $libState  = aws glue get-crawler --name project-library-crawler --region $REGION --query "Crawler.State" --output text 2>&1
+    $carsState = aws glue get-crawler --name project-cars-crawler    --region $REGION --query "Crawler.State" --output text 2>&1
+    Write-Host "  library=$libState  cars=$carsState"
+} while ($libState -eq "RUNNING" -or $carsState -eq "RUNNING")
+Write-Host "Crawlers done." -ForegroundColor Green
+
+Write-Host "Setting Athena workgroup S3 output location..." -ForegroundColor Yellow
+aws athena update-work-group --work-group project-text-to-sql --region $REGION --configuration-updates "ResultConfigurationUpdates={OutputLocation=s3://$BUCKET/athenaresults/}" 2>&1 | Out-Null
+Write-Host "Athena output location set." -ForegroundColor Green
 
 # ─── STEP 6: Print next steps ─────────────────────────────────────────────────
 Write-Host "`n[6/6] Getting deploy role ARN..." -ForegroundColor Yellow

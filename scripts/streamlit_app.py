@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""CloudAge Data Intelligence — AI-powered analytics chat interface.
-
-Spotter-inspired conversational UI for natural-language data queries.
-Powered by AWS Bedrock + Athena.
+"""AI Data Analyst Agent — conversational UI for natural-language data queries.
 
 Local mode (default): uses AWS credentials and env vars directly.
 Remote mode: set API_URL to your ECS load balancer.
@@ -504,7 +501,7 @@ def _render_hero():
 
     logo_html = ""
     if logo_uri:
-        logo_html = f'<img src="{logo_uri}" class="hero-logo-img" alt="CloudAge"/>'
+        logo_html = f'<img src="{logo_uri}" class="hero-logo-img" alt="AI Data Analyst"/>'
 
     st.markdown(f"""
     <div class="hero-section">
@@ -512,7 +509,7 @@ def _render_hero():
         <div class="hero-title" style="color:#059669;">AI Data Analyst Agent</div>
         <div class="hero-subtitle">Instant answers from your data</div>
         <div class="hero-desc">
-            Ask questions in plain English. CloudAge generates SQL, executes it
+            Ask questions in plain English. The agent generates SQL, executes it
             against your data warehouse, and delivers trusted answers in seconds.
         </div>
     </div>
@@ -591,7 +588,7 @@ def _render_sidebar():
             st.markdown(
                 '<div class="sidebar-logo">'
                 '<span style="font-size:1.5rem; font-weight:700; color:#0D47A1;">'
-                'CloudAge</span></div>',
+                'AI Data Analyst</span></div>',
                 unsafe_allow_html=True,
             )
 
@@ -775,8 +772,7 @@ def _render_sidebar():
         st.markdown(
             '<div style="text-align:center; font-size:0.7rem; color:#94A3B8; '
             'padding:1rem 1rem 0.5rem; margin-top:1rem;">'
-            'Powered by AWS Bedrock + Athena<br>'
-            '© 2025 CloudAge Global'
+            'Powered by AWS Bedrock + Athena'
             '</div>',
             unsafe_allow_html=True,
         )
@@ -822,7 +818,7 @@ def _check_login() -> bool:
         if logo_uri:
             st.markdown(
                 f'<div style="text-align:center; padding:2rem 0 1rem;">'
-                f'<img src="{logo_uri}" style="width:180px;" alt="CloudAge"/>'
+                f'<img src="{logo_uri}" style="width:180px;" alt="AI Data Analyst"/>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -853,8 +849,8 @@ def _check_login() -> bool:
 
 def main() -> None:
     st.set_page_config(
-        page_title='CloudAge — Data Intelligence',
-        page_icon='☁️',
+        page_title='AI Data Analyst Agent',
+        page_icon='🤖',
         layout='centered',
         initial_sidebar_state='collapsed',
     )
