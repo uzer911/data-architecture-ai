@@ -438,27 +438,15 @@ def _ask(question: str) -> str:
     if _api_base_url():
         return _ask_remote(question)
 
-    # Check which data source is selected in the sidebar
-    CONNECTOR_OPTIONS = {
-        '☁️ Athena (AWS)': 'athena',
-        '🔴 Redshift (AWS)': 'redshift',
-        '🐘 RDS PostgreSQL': 'rds_postgres',
-        '🐬 RDS MySQL': 'rds_mysql',
-        '❄️ Snowflake': 'snowflake',
-        '🧱 Databricks': 'databricks',
-    }
+    # Get selected connector type from session state (set by sidebar picker)
+    selected_type = st.session_state.get('active_source_key', 'athena')
 
-    active_source = st.session_state.get('active_source', '☁️ Athena (AWS)')
-    selected_type = CONNECTOR_OPTIONS.get(active_source, '')
-
-    # If Athena is selected, use the existing local service (backward compatible)
+    # Athena — use the existing local service
     if selected_type == 'athena':
         return _ask_local(question)
 
-    # Try connector framework for other sources (config/connections/*.yaml)
+    # Other connectors — look up configured YAML connection
     connections = load_connections()
-
-    # Find a matching configured connection
     matching_conn = None
     for name, config in connections.items():
         if config.get('type') == selected_type:
@@ -473,23 +461,23 @@ def _ask(question: str) -> str:
             else:
                 catalog, tables = connector.get_schema()
                 return (
-                    f"✅ Connected to **{matching_conn}** ({selected_type}). "
+                    f"✅ Connected to **{matching_conn}** (`{selected_type}`). "
                     f"Found {len(tables)} tables. "
-                    f"Full LLM-powered query support coming soon."
+                    f"Full LLM query support coming soon."
                 )
         except NotImplementedError as e:
             return f"⚠️ {e}"
         except Exception as e:
             return f"⚠️ Connector error: {e}"
 
-    # No config file found for this type
+    # Not configured yet
     return (
-        f"⚠️ **{active_source}** is not configured yet.\n\n"
+        f"⚪ **{selected_type}** is not configured yet.\n\n"
         f"To set it up:\n"
         f"1. Copy `config/connections/{selected_type}.yaml.template` → "
         f"`config/connections/{selected_type}.yaml`\n"
         f"2. Fill in your connection details\n"
-        f"3. Restart the app"
+        f"3. Click **Reconnect** in the sidebar"
     )
 
 
@@ -698,57 +686,74 @@ def _render_sidebar():
 
         st.divider()
 
-        # ── Data Source Picker ──
+        # ── Data Source Picker — always shows all 6, marks configured vs not ──
         st.markdown(
             '<div class="sidebar-section-title">📊 Data Source</div>',
             unsafe_allow_html=True,
         )
 
-        # Always show all supported connector types
-        CONNECTOR_OPTIONS = {
-            '☁️ Athena (AWS)': 'athena',
-            '🔴 Redshift (AWS)': 'redshift',
-            '🐘 RDS PostgreSQL': 'rds_postgres',
-            '🐬 RDS MySQL': 'rds_mysql',
-            '❄️ Snowflake': 'snowflake',
-            '🧱 Databricks': 'databricks',
-        }
+        # All supported connectors — always shown regardless of config
+        ALL_CONNECTORS = [
+            ('☁️ Athena (S3/Glue)',   'athena'),
+            ('🐬 Aurora RDS (MySQL)',  'rds_mysql'),
+            ('🐘 RDS PostgreSQL',      'rds_postgres'),
+            ('🔴 Redshift',            'redshift'),
+            ('❄️ Snowflake',           'snowflake'),
+            ('🧱 Databricks',          'databricks'),
+        ]
 
-        # Also include any configured connections from YAML files
+        # Load what's actually configured in config/connections/*.yaml
         connections = load_connections()
-        configured_names = list(connections.keys())
+        configured_types = {c.get('type') for c in connections.values()}
+        configured_names = {name: c.get('type') for name, c in connections.items()}
 
-        # Build the full options list
-        all_options = list(CONNECTOR_OPTIONS.keys())
-        for name in configured_names:
-            if name not in all_options:
-                conn_type = connections[name].get('type', 'unknown')
-                all_options.append(f"📁 {name} ({conn_type})")
+        # Athena is configured if env vars or API_URL are set
+        athena_configured = bool(
+            _api_base_url() or
+            os.environ.get('GLUE_DB_NAME') or
+            st.session_state.get('cfg_glue_db')
+        )
 
-        current = st.session_state.get('active_source', all_options[0])
-        if current not in all_options:
-            current = all_options[0]
+        def _is_configured(conn_type: str) -> bool:
+            if conn_type == 'athena':
+                return athena_configured
+            return conn_type in configured_types
+
+        # Build display labels with ✅/⚪ indicator
+        option_labels = []
+        for label, conn_type in ALL_CONNECTORS:
+            indicator = '✅' if _is_configured(conn_type) else '⚪'
+            option_labels.append(f"{indicator} {label}")
+
+        current = st.session_state.get('active_source', option_labels[0])
+        if current not in option_labels:
+            current = option_labels[0]
 
         selected = st.selectbox(
             'Active data source',
-            options=all_options,
-            index=all_options.index(current),
+            options=option_labels,
+            index=option_labels.index(current),
             key='source_selector',
             label_visibility='collapsed',
         )
         st.session_state['active_source'] = selected
 
-        # Show connection status for selected source
-        selected_type = CONNECTOR_OPTIONS.get(selected, '')
-        if selected_type:
-            # Check if any loaded connection matches this type
-            has_config = any(
-                c.get('type') == selected_type for c in connections.values()
-            )
-            if has_config or selected_type == 'athena':
-                st.caption(f"✅ Type: `{selected_type}` — configured")
+        # Derive the connector type from the selected label
+        selected_idx = option_labels.index(selected)
+        selected_type = ALL_CONNECTORS[selected_idx][1]
+        st.session_state['active_source_key'] = selected_type
+
+        # Status caption
+        if _is_configured(selected_type):
+            if selected_type == 'athena' and _api_base_url():
+                st.caption("✅ Connected via Remote API")
+            elif selected_type == 'athena':
+                st.caption(f"✅ Direct — `{os.environ.get('GLUE_DB_NAME', 'project_library_db')}`")
             else:
-                st.caption(f"⚠️ No `.yaml` config found for `{selected_type}`")
+                conn_name = next((n for n, t in configured_names.items() if t == selected_type), selected_type)
+                st.caption(f"✅ Configured — `{conn_name}`")
+        else:
+            st.caption(f"⚪ Not configured — copy `config/connections/{selected_type}.yaml.template` to set up")
 
         st.divider()
 
@@ -852,7 +857,7 @@ def main() -> None:
         page_title='AI Data Analyst Agent',
         page_icon='🤖',
         layout='centered',
-        initial_sidebar_state='collapsed',
+        initial_sidebar_state='expanded',
     )
 
     _inject_custom_css()
