@@ -1,4 +1,4 @@
-# CloudFormation Deployment Guide
+﻿# CloudFormation Deployment Guide
 
 This guide shows how to deploy the `cloudformation-template-validated.yml` template using AWS CloudFormation change sets.
 

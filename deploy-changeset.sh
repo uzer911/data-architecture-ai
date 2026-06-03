@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # CloudFormation deployment script.
 # The stack creates its own VPC, subnets, and VPC endpoints — no external
 # VPC parameters are needed. No NAT gateway is used.

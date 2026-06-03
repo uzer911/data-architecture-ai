@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Load sample data (library + cars) into Aurora Serverless v2 via pymysql.
 
 This script connects to the Aurora cluster using credentials from Secrets Manager,

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # Read VPC outputs from the deployed CloudFormation stack.
 # The VPC is now created by the stack itself — there is no default-VPC dependency.
 # This script is used by deploy-changeset.sh only to display post-deploy info.

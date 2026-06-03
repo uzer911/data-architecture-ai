@@ -1,4 +1,4 @@
-# Deploying to Your AWS Account
+﻿# Deploying to Your AWS Account
 
 **Account ID:** `471613014056`  
 **Region:** `eu-north-1`  

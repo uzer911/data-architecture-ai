@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # Build the API image, push to ECR, and optionally scale/start the ECS service.
 set -euo pipefail
 

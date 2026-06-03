@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # Configure S3 event notification on a pre-existing bucket to trigger the
 # crawler Lambda. Only needed when CreatePrimaryDataBucket=false (bucket
 # already existed before the stack was deployed).

@@ -1,4 +1,4 @@
-AWSTemplateFormatVersion: '2010-09-09'
+﻿AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   GitHub Actions OIDC IAM role for deploying the ai-analyst-agent-project stack.
   Creates an OIDC provider (if not already present) and a deploy role that GitHub

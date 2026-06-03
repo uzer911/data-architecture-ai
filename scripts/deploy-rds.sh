@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 # Deploy Aurora Serverless v2 (MySQL) in the same VPC as the main stack.
 #
 # Usage:

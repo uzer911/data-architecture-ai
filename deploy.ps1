@@ -1,14 +1,15 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 
 $REGION     = "eu-north-1"
 $ACCOUNT_ID = (aws sts get-caller-identity --query Account --output text)
 $BUCKET     = "langchain-$ACCOUNT_ID-$REGION"
 $STACK_MAIN = "ai-analyst-agent-project"
-$STACK_OIDC = "github-oidc-role"
+$STACK_OIDC = "github-actions-ai-agent-role"
+$STACK_RDS  = "ai-rds-aurora"
 $GITHUB_ORG  = "uzer911"
 $GITHUB_REPO = "data-architecture-ai"
 
-Write-Host "=== Starting full deployment ===" -ForegroundColor Cyan
+Write-Host "`n=== Starting full deployment ===" -ForegroundColor Cyan
 Write-Host "Account : $ACCOUNT_ID"
 Write-Host "Region  : $REGION"
 Write-Host "Bucket  : $BUCKET"
@@ -84,8 +85,33 @@ if (-not $oidcExists) {
     Write-Host "OIDC stack already exists." -ForegroundColor Green
 }
 
-# ─── STEP 5: Upload sample data and run crawlers ──────────────────────────────
-Write-Host "`n[5/6] Uploading sample data to S3..." -ForegroundColor Yellow
+# ─── STEP 5: Aurora RDS stack ─────────────────────────────────────────────────
+Write-Host "`n[5/7] Aurora RDS stack..." -ForegroundColor Yellow
+$rdsExists = $false
+try { aws cloudformation describe-stacks --stack-name $STACK_RDS --region $REGION 2>&1 | Out-Null; $rdsExists = ($LASTEXITCODE -eq 0) } catch {}
+if (-not $rdsExists) {
+    aws s3 cp cloudformation-rds-aurora.yml "s3://$BUCKET/cfn/rds-aurora.yml" --region $REGION
+    aws cloudformation create-stack `
+        --stack-name $STACK_RDS `
+        --template-url "https://s3.$REGION.amazonaws.com/$BUCKET/cfn/rds-aurora.yml" `
+        --capabilities CAPABILITY_IAM `
+        --region $REGION `
+        --parameters `
+            ParameterKey=MainStackName,ParameterValue=$STACK_MAIN | Out-Null
+    Write-Host "RDS stack creation started (~8 min)..." -ForegroundColor Yellow
+    aws cloudformation wait stack-create-complete --stack-name $STACK_RDS --region $REGION
+    Write-Host "RDS stack created." -ForegroundColor Green
+
+    # Print connection info
+    $rdsEndpoint = aws cloudformation describe-stacks --stack-name $STACK_RDS --region $REGION --query "Stacks[0].Outputs[?OutputKey=='ClusterEndpoint'].OutputValue" --output text
+    Write-Host "Aurora endpoint: $rdsEndpoint" -ForegroundColor Cyan
+    Write-Host "Copy this to config/connections/rds-mysql.yaml when ready." -ForegroundColor White
+} else {
+    Write-Host "RDS stack already exists." -ForegroundColor Green
+}
+
+# ─── STEP 6: Upload sample data and run crawlers ──────────────────────────────
+Write-Host "`n[6/7] Uploading sample data to S3..." -ForegroundColor Yellow
 aws s3 cp data/s3_library_data.json        "s3://$BUCKET/library-data/" --region $REGION
 aws s3 cp data/s3_cars_data_normalized.csv "s3://$BUCKET/cars-data/"    --region $REGION
 Write-Host "Sample data uploaded." -ForegroundColor Green
@@ -108,7 +134,7 @@ aws athena update-work-group --work-group project-text-to-sql --region $REGION -
 Write-Host "Athena output location set." -ForegroundColor Green
 
 # ─── STEP 6: Print next steps ─────────────────────────────────────────────────
-Write-Host "`n[6/6] Getting deploy role ARN..." -ForegroundColor Yellow
+Write-Host "`n[7/7] Getting deploy role ARN..." -ForegroundColor Yellow
 $roleArn = aws cloudformation describe-stacks `
     --stack-name $STACK_OIDC --region $REGION `
     --query "Stacks[0].Outputs[?OutputKey=='DeployRoleArn'].OutputValue" `

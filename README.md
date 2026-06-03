@@ -1,4 +1,4 @@
-Project: Data Architecture with Generative AI
+﻿Project: Data Architecture with Generative AI
 
 Overview
 - Notebook `mda_text_to_sql_langchain_bedrock.ipynb` demonstrates using LangChain + Bedrock to convert text to SQL and query data.

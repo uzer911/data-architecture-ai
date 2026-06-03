@@ -1,4 +1,4 @@
-AWSTemplateFormatVersion: '2010-09-09'
+﻿AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Aurora Serverless v2 (MySQL-compatible) — deployed in the VPC created by the
   main ai-analyst-agent-project stack. Scales to zero when idle.
