@@ -16,14 +16,12 @@ env:
   ECS_CLUSTER: data-architecture-ai
   ECS_SERVICE: data-architecture-ai
   STACK_NAME: ai-analyst-agent-project
-  AWS_ACCOUNT_ID: "741116633751"
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  # ── Gate: run tests first ──────────────────────────────────────────────────
   test:
     runs-on: ubuntu-latest
     steps:
@@ -38,7 +36,6 @@ jobs:
           PYTHONPATH: src
       - run: python run_smoke.py
 
-  # ── Build + Push + Deploy ──────────────────────────────────────────────────
   deploy:
     needs: test
     runs-on: ubuntu-latest
@@ -48,16 +45,20 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::741116633751:role/github-actions-ai-agent-deploy
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: github-actions-deploy
+
+      - name: Get AWS account ID
+        id: account
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
 
       - name: Login to Amazon ECR
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push Docker image
-        id: build
         env:
           ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
@@ -68,9 +69,8 @@ jobs:
             .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Force ECS redeployment
+      - name: Update ECS service
         env:
           DESIRED_COUNT: ${{ github.event.inputs.desired_count || '1' }}
         run: |
@@ -81,20 +81,26 @@ jobs:
             --desired-count $DESIRED_COUNT \
             --region $AWS_REGION
 
-      - name: Wait for service stability
+      - name: Wait for ECS deployment
         run: |
-          echo "Waiting for ECS service to stabilize..."
           aws ecs wait services-stable \
             --cluster $ECS_CLUSTER \
             --services $ECS_SERVICE \
-            --region $AWS_REGION || echo "Timeout waiting for stability (service may still be deploying)"
+            --region $AWS_REGION || true
 
-      - name: Print API URL
+      - name: Get API endpoint
         run: |
           ALB_URL=$(aws cloudformation describe-stacks \
             --stack-name $STACK_NAME \
             --region $AWS_REGION \
             --query "Stacks[0].Outputs[?OutputKey=='LoadBalancerUrl'].OutputValue" \
-            --output text)
-          echo "🚀 API deployed: $ALB_URL"
-          echo "Health check: $ALB_URL/health"
+            --output text 2>/dev/null)
+          echo "API_URL=$ALB_URL" >> $GITHUB_ENV
+
+      - name: Verify deployment
+        run: |
+          if [ -z "$API_URL" ]; then
+            echo "❌ No ALB URL found"
+            exit 1
+          fi
+          echo "✅ API deployed: $API_URL"
