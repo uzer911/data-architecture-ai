@@ -16,6 +16,7 @@ env:
   ECS_CLUSTER: data-architecture-ai
   ECS_SERVICE: data-architecture-ai
   STACK_NAME: ai-analyst-agent-project
+  AWS_ACCOUNT_ID: "741116633751"
 
 permissions:
   id-token: write
@@ -47,8 +48,9 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-to-assume: arn:aws:iam::741116633751:role/github-actions-ai-agent-deploy
           aws-region: ${{ env.AWS_REGION }}
+          role-session-name: github-actions-deploy
 
       - name: Login to Amazon ECR
         id: ecr-login
